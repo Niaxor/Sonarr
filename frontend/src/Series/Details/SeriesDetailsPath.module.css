@@ -1,0 +1,50 @@
+.path {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  padding: 0;
+  min-width: 0;
+  max-width: 560px;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  text-shadow: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  gap: 7px;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--white);
+
+    .folderIcon {
+      display: none;
+    }
+
+    .copyIcon {
+      display: inline-block;
+    }
+  }
+}
+
+.icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.copyIcon {
+  display: none;
+}
+
+.text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (--breakpointSmall) {
+  .path {
+    max-width: none;
+  }
+}
