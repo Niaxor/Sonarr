@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using NLog;
 using NzbDrone.Common.Cache;
@@ -17,13 +18,24 @@ namespace NzbDrone.Common.TPL
 
     public class RateLimitService : IRateLimitService
     {
-        private readonly ConcurrentDictionary<string, DateTime> _rateLimitStore;
+        // "Wait until" times on a monotonic clock. Wall-clock time (DateTime.UtcNow) must not be used here: when the
+        // system clock steps backwards (e.g. a VM resyncing its clock) every stored value would suddenly lie in the
+        // future and the next request would wait out the whole step instead of the rate limit interval.
+        private readonly ConcurrentDictionary<string, TimeSpan> _rateLimitStore;
         private readonly Logger _logger;
 
         public RateLimitService(ICacheManager cacheManager, Logger logger)
         {
-            _rateLimitStore = cacheManager.GetCache<ConcurrentDictionary<string, DateTime>>(GetType(), "rateLimitStore").Get("rateLimitStore", () => new ConcurrentDictionary<string, DateTime>());
+            _rateLimitStore = cacheManager.GetCache<ConcurrentDictionary<string, TimeSpan>>(GetType(), "rateLimitStoreMonotonic").Get("rateLimitStoreMonotonic", () => new ConcurrentDictionary<string, TimeSpan>());
             _logger = logger;
+        }
+
+        // Monotonic time source, replaceable in tests
+        public Func<TimeSpan> Clock { get; set; } = GetMonotonicTime;
+
+        public static TimeSpan GetMonotonicTime()
+        {
+            return TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency);
         }
 
         public void WaitAndPulse(string key, TimeSpan interval)
@@ -58,16 +70,22 @@ namespace NzbDrone.Common.TPL
             }
         }
 
-        private TimeSpan GetDelay(string key, string subKey, TimeSpan interval)
+        public TimeSpan GetDelay(string key, TimeSpan interval)
         {
-            var waitUntil = DateTime.UtcNow.Add(interval);
+            return GetDelay(key, null, interval);
+        }
+
+        public TimeSpan GetDelay(string key, string subKey, TimeSpan interval)
+        {
+            var now = Clock();
+            var waitUntil = now + interval;
 
             if (subKey.IsNotNullOrWhiteSpace())
             {
                 // Expand the base key timer, but don't extend it beyond now+interval.
                 var baseUntil = _rateLimitStore.AddOrUpdate(key,
                     (s) => waitUntil,
-                    (s, i) => new DateTime(Math.Max(waitUntil.Ticks, i.Ticks), DateTimeKind.Utc));
+                    (s, i) => Max(waitUntil, i));
 
                 if (baseUntil > waitUntil)
                 {
@@ -78,18 +96,23 @@ namespace NzbDrone.Common.TPL
                 var combinedKey = key + "-" + subKey;
                 waitUntil = _rateLimitStore.AddOrUpdate(combinedKey,
                     (s) => waitUntil,
-                    (s, i) => new DateTime(Math.Max(waitUntil.Ticks, i.Add(interval).Ticks), DateTimeKind.Utc));
+                    (s, i) => Max(waitUntil, i + interval));
             }
             else
             {
                 waitUntil = _rateLimitStore.AddOrUpdate(key,
                     (s) => waitUntil,
-                    (s, i) => new DateTime(Math.Max(waitUntil.Ticks, i.Add(interval).Ticks), DateTimeKind.Utc));
+                    (s, i) => Max(waitUntil, i + interval));
             }
 
             waitUntil -= interval;
 
-            return waitUntil - DateTime.UtcNow;
+            return waitUntil - now;
+        }
+
+        private static TimeSpan Max(TimeSpan a, TimeSpan b)
+        {
+            return a > b ? a : b;
         }
     }
 }

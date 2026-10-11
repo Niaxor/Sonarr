@@ -2,7 +2,7 @@
 #
 # Sonarr with bundle fast-start, built from this fork.
 #
-# Only Sonarr.Core.dll differs from stock Sonarr 4.0.20.3014, so the backend assembly is built here and laid over the
+# Only Sonarr.Core.dll and Sonarr.Common.dll differ from stock Sonarr 4.0.20.3014, so they are built here and laid over the
 # official linuxserver.io image of exactly the same version (frontend, runtime and every other assembly come from it).
 #
 # Build from the repository root:
@@ -25,7 +25,7 @@ RUN sed -i "s/<AssemblyVersion>[0-9.*]\+<\/AssemblyVersion>/<AssemblyVersion>${S
     sed -i "s/<AssemblyConfiguration>[\$()A-Za-z-]\+<\/AssemblyConfiguration>/<AssemblyConfiguration>main<\/AssemblyConfiguration>/g" src/Directory.Build.props && \
     dotnet build src/NzbDrone.Core/Sonarr.Core.csproj -c Release -p:Platform=Posix -p:SolutionDir=/src/src/ && \
     mkdir /out && \
-    cp _output/net6.0/Sonarr.Core.dll _output/net6.0/Sonarr.Core.pdb /out/
+    cp _output/net6.0/Sonarr.Core.dll _output/net6.0/Sonarr.Core.pdb _output/net6.0/Sonarr.Common.dll _output/net6.0/Sonarr.Common.pdb /out/
 
 FROM ${BASE_IMAGE}
 
@@ -33,4 +33,4 @@ LABEL org.opencontainers.image.title="Sonarr (bundle fast-start)" \
       org.opencontainers.image.description="Sonarr 4.0.20.3014 with bundle-first search and partial qBittorrent bundle downloads" \
       org.opencontainers.image.source="https://github.com/Niaxor/Sonarr"
 
-COPY --from=build /out/Sonarr.Core.dll /out/Sonarr.Core.pdb /app/sonarr/bin/
+COPY --from=build /out/ /app/sonarr/bin/
