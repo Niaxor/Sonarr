@@ -15,8 +15,17 @@ What it changes (backend only):
   download", then started.
 - Requested episodes that the bundle does not contain are searched for normally.
 - The grab history records only the selected episodes, so the download imports and completes normally.
+- The files of the first two requested episodes get maximal priority (7) and the torrent is added with sequential
+  download, so episodes finish roughly in order.
+- While the bundle is still downloading, every selected file that qBittorrent reports 100% complete is imported on
+  the next download-monitoring cycle (about once a minute), always by copy/hardlink so nothing leaves the torrent.
+  Look for `Bundle fast-start: imported ... while still downloading (n of m)` in the log. When the torrent finishes,
+  the already imported episodes are recognised and the download is marked Imported.
 
-Disable it without rebuilding: set the environment variable `SONARR_BUNDLE_FAST_START=false`.
+Environment variables (no rebuild needed):
+
+- `SONARR_BUNDLE_FAST_START=false` turns the whole feature off.
+- `SONARR_BUNDLE_SEQUENTIAL=false` keeps the first-episode priority but turns off sequential download.
 
 ## Build
 
