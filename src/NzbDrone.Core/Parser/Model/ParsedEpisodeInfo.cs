@@ -22,6 +22,13 @@ namespace NzbDrone.Core.Parser.Model
         public bool FullSeason { get; set; }
         public bool IsPartialSeason { get; set; }
         public bool IsMultiSeason { get; set; }
+
+        // Bundle fast-start: every season covered by a multi-season release (e.g. S01-S05 => 1..5)
+        public int[] MultiSeasonNumbers { get; set; }
+
+        // Bundle fast-start: the release is a series bundle (complete series, batch, multi-season or absolute range
+        // with bundle words). Name-only bundles have no season/episode numbers and cover the whole series.
+        public bool IsSeriesBundle { get; set; }
         public bool IsSeasonExtra { get; set; }
         public bool IsSplitEpisode { get; set; }
         public bool IsMiniSeries { get; set; }
@@ -37,6 +44,7 @@ namespace NzbDrone.Core.Parser.Model
             EpisodeNumbers = Array.Empty<int>();
             AbsoluteEpisodeNumbers = Array.Empty<int>();
             SpecialAbsoluteEpisodeNumbers = Array.Empty<decimal>();
+            MultiSeasonNumbers = Array.Empty<int>();
             Languages = new List<Language>();
         }
 
@@ -72,6 +80,18 @@ namespace NzbDrone.Core.Parser.Model
                        SeriesTitle.IsNullOrWhiteSpace() &&
                        (EpisodeNumbers.Length == 0 || SeasonNumber == 0)) || (!SeriesTitle.IsNullOrWhiteSpace() && Special)) ||
                        (EpisodeNumbers.Length == 1 && EpisodeNumbers[0] == 0);
+            }
+
+            private set
+            {
+            }
+        }
+
+        public bool IsNameOnlySeriesBundle
+        {
+            get
+            {
+                return IsSeriesBundle && !FullSeason && EpisodeNumbers.Empty() && AbsoluteEpisodeNumbers.Empty() && !IsDaily;
             }
 
             private set
@@ -144,6 +164,10 @@ namespace NzbDrone.Core.Parser.Model
                 {
                     episodeString = "[Unknown Special]";
                 }
+            }
+            else if (IsNameOnlySeriesBundle)
+            {
+                episodeString = "[Complete Series]";
             }
 
             return string.Format("{0} - {1} {2}", SeriesTitle, episodeString, Quality);

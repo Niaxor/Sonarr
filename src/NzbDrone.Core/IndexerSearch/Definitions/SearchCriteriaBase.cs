@@ -22,6 +22,12 @@ namespace NzbDrone.Core.IndexerSearch.Definitions
         public virtual bool UserInvokedSearch { get; set; }
         public virtual bool InteractiveSearch { get; set; }
 
+        // Bundle fast-start: when set, releases covering more than these episodes (series bundles, multi-season packs)
+        // are accepted and narrowed to the requested episodes, so a subset of their files can be grabbed.
+        public List<Episode> BundleRequestedEpisodes { get; set; }
+
+        public bool IsBundleFastStart => BundleRequestedEpisodes != null && BundleRequestedEpisodes.Any();
+
         public List<string> AllSceneTitles => SceneTitles.Concat(CleanSceneTitles).Distinct().ToList();
         public List<string> CleanSceneTitles => SceneTitles.Select(GetCleanSceneTitle).Distinct().ToList();
 

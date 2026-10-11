@@ -58,6 +58,10 @@ namespace NzbDrone.Core.Parser
 
         private static readonly Regex[] ReportTitleRegex = new[]
             {
+                // Bundle fast-start: multi-season anime bundle with an absolute episode range, e.g. "[ENTE] Title (2002) S01-S05 (E001-E220)"
+                new Regex(@"^(?:\[(?<subgroup>.+?)\][-_. ]?)?(?<title>.+?)[-_. ]+S(?<season>(?<!\d+)\d{1,2})[-_. ]?-[-_. ]?S(?<season>\d{1,2}(?!\d+))[-_. ]+[(\[]?E(?<absoluteepisode>\d{2,4})[-_. ]?-[-_. ]?E(?<absoluteepisode>\d{2,4})(?!\d+)[)\]]?",
+                          RegexOptions.IgnoreCase | RegexOptions.Compiled),
+
                 // Anime - Absolute Episode Number + Title + Season+Episode
                 // Todo: This currently breaks series that start with numbers
 //                new Regex(@"^(?:(?<absoluteepisode>\d{2,3})(?:_|-|\s|\.)+)+(?<title>.+?)(?:\W|_)+(?:S?(?<season>(?<!\d+)\d{1,2}(?!\d+))(?:(?:\-|[ex]|\W[ex]){1,2}(?<episode>\d{2}(?!\d+)))+)",
@@ -456,6 +460,12 @@ namespace NzbDrone.Core.Parser
 
                 // Episodes without a title, Single episode numbers (S1E1, 1x1)
                 new Regex(@"^(?:S?(?<season>(?<!\d+)(?:\d{1,2}|\d{4})(?!\d+))(?:(?:[-_ ]?[ex])(?<episode>\d{1}(?!\d+))))",
+                    RegexOptions.IgnoreCase | RegexOptions.Compiled),
+
+                // Bundle fast-start: name-only series bundles without any season or episode numbers,
+                // e.g. "[Judas] Title (Complete Series) [BD 1080p] (Batch)", "Title The Complete Series 1080p BluRay" or "[Group] Title (Complete)".
+                // A bare "Complete" outside brackets is left unparsed, it is too ambiguous for standard releases.
+                new Regex(@"^(?:\[(?<subgroup>.+?)\][-_. ]?)?(?<title>.+?)[-_. ]+(?:[(\[](?<completeseries>complete)[)\]]|[(\[]?(?<completeseries>(?:the[-_. ]+)?complete[-_. ]+series|batch)[)\]]?)(?:[-_. ]|$)",
                     RegexOptions.IgnoreCase | RegexOptions.Compiled)
             };
 
@@ -587,6 +597,11 @@ namespace NzbDrone.Core.Parser
         private static readonly Regex SimpleEpisodeNumberRegex = new Regex(@"^[ex]?(?<episode>(?<!\d+)\d{1,3}(?!\d+))(?:[ex-](?<episode>(?<!\d+)\d{1,3}(?!\d+)))?(?:[_. ](?!\d+)(?<remaining>.+)|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex RequestInfoRegex = new Regex(@"^(?:\[.+?\])+", RegexOptions.Compiled);
+
+        // Bundle fast-start: words that mark a series bundle when they trail the parsed series title,
+        // e.g. "Title Complete", "Title Complete Series", "Title Batch", "Title Box 02", "Title Complete + Movies"
+        private static readonly Regex BundleTitleSuffixRegex = new Regex(@"(?<=\S)[-_. ]+[(\[]?(?:(?:the[-_. ]+)?complete(?:[-_. ]+series)?|batch|box[-_. ]?\d{1,2})[)\]]?(?:[-_. ]*\+[-_. ]*movies?)?$",
+                                                                          RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly string[] Numbers = new[] { "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine" };
 
@@ -1022,6 +1037,8 @@ namespace NzbDrone.Core.Parser
             var seriesName = matchCollection[0].Groups["title"].Value.Replace('.', ' ').Replace('_', ' ');
             seriesName = RequestInfoRegex.Replace(seriesName, "").Trim(' ');
 
+            var strippedBundleWords = StripBundleWords(ref seriesName);
+
             int.TryParse(matchCollection[0].Groups["airyear"].Value, out var airYear);
 
             var lastSeasonEpisodeStringIndex = matchCollection[0].Groups["title"].EndIndex();
@@ -1165,6 +1182,32 @@ namespace NzbDrone.Core.Parser
                     result.SeasonNumber = 1;
                     result.IsMiniSeries = true;
                 }
+
+                if (result.IsMultiSeason)
+                {
+                    var firstSeason = seasons.Min();
+                    var lastSeason = seasons.Max();
+
+                    result.MultiSeasonNumbers = Enumerable.Range(firstSeason, lastSeason - firstSeason + 1).ToArray();
+                }
+
+                // Bundle fast-start: name-only series bundle ("Title (Complete Series)", "Title Batch"), covers the whole series
+                if (matchCollection[0].Groups["completeseries"].Success &&
+                    !seasons.Any() &&
+                    !result.EpisodeNumbers.Any() &&
+                    !result.AbsoluteEpisodeNumbers.Any())
+                {
+                    result.FullSeason = false;
+                    result.IsSeriesBundle = true;
+                }
+
+                // Bundle fast-start: bundle words trailing the title of an absolute range or multi-season release,
+                // or a multi-season release with an absolute episode range, e.g. "Title Complete (001-220)" or "Title S01-S05 (E001-E220)"
+                if ((strippedBundleWords && (!seasons.Any() || result.IsMultiSeason)) ||
+                    (result.IsMultiSeason && result.AbsoluteEpisodeNumbers.Any()))
+                {
+                    result.IsSeriesBundle = true;
+                }
             }
             else
             {
@@ -1287,6 +1330,26 @@ namespace NzbDrone.Core.Parser
             }
 
             return true;
+        }
+
+        private static bool StripBundleWords(ref string seriesName)
+        {
+            var stripped = false;
+
+            while (true)
+            {
+                var cleaned = BundleTitleSuffixRegex.Replace(seriesName, string.Empty).Trim(' ', '-', '_', '.');
+
+                if (cleaned == seriesName || cleaned.IsNullOrWhiteSpace())
+                {
+                    return stripped;
+                }
+
+                Logger.Trace("Removed bundle words from series title: '{0}' -> '{1}'", seriesName, cleaned);
+
+                seriesName = cleaned;
+                stripped = true;
+            }
         }
 
         private static string GetSubGroup(MatchCollection matchCollection)

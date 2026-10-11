@@ -221,6 +221,23 @@ namespace NzbDrone.Core.Parser
 
         private List<Episode> GetEpisodes(ParsedEpisodeInfo parsedEpisodeInfo, Series series, int mappedSeasonNumber, bool sceneSource, SearchCriteriaBase searchCriteria)
         {
+            if (parsedEpisodeInfo.IsNameOnlySeriesBundle)
+            {
+                // Bundle fast-start: a name-only bundle ("Title (Complete Series)") is assumed to cover every regular episode,
+                // the torrent's file list decides what it really contains before anything is grabbed.
+                return _episodeService.GetEpisodeBySeries(series.Id).Where(e => e.SeasonNumber > 0).ToList();
+            }
+
+            if (parsedEpisodeInfo.FullSeason && parsedEpisodeInfo.IsMultiSeason && parsedEpisodeInfo.MultiSeasonNumbers.Length > 1)
+            {
+                // Bundle fast-start: map multi-season packs (S01-S05) to every season they cover
+                var seasonOffset = mappedSeasonNumber - parsedEpisodeInfo.SeasonNumber;
+
+                return parsedEpisodeInfo.MultiSeasonNumbers
+                    .SelectMany(s => _episodeService.GetEpisodesBySeason(series.Id, s + seasonOffset))
+                    .ToList();
+            }
+
             if (parsedEpisodeInfo.FullSeason)
             {
                 if (series.UseSceneNumbering && sceneSource)
