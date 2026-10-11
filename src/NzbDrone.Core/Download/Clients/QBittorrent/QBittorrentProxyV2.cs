@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using NLog;
 using NzbDrone.Common.Cache;
@@ -286,6 +287,25 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             var resource = GetApiVersion(settings) >= new Version(2, 11, 0) ? "/api/v2/torrents/start" : "/api/v2/torrents/resume";
 
             var request = BuildRequest(settings).Resource(resource)
+                                                .Post()
+                                                .AddFormParameter("hashes", hash);
+
+            ProcessRequest(request, settings);
+        }
+
+        // torrents/info filtered by hash, regardless of category. Null when the torrent isn't in qBittorrent.
+        public QBittorrentTorrent GetTorrent(string hash, QBittorrentSettings settings)
+        {
+            var request = BuildRequest(settings).Resource("/api/v2/torrents/info")
+                                                .AddQueryParam("hashes", hash);
+
+            return ProcessRequest<List<QBittorrentTorrent>>(request, settings).FirstOrDefault();
+        }
+
+        // torrents/toggleSequentialDownload: flips the sequential download flag of the torrent
+        public void ToggleSequentialDownload(string hash, QBittorrentSettings settings)
+        {
+            var request = BuildRequest(settings).Resource("/api/v2/torrents/toggleSequentialDownload")
                                                 .Post()
                                                 .AddFormParameter("hashes", hash);
 

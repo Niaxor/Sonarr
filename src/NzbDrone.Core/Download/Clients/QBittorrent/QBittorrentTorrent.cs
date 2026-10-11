@@ -41,6 +41,9 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         [JsonProperty(PropertyName = "inactive_seeding_time_limit")] // Per torrent inactive seeding time limit (-2 = use global, -1 = unlimited)
         public long InactiveSeedingTimeLimit { get; set; } = -2;
 
+        [JsonProperty(PropertyName = "seq_dl")] // True if sequential download is enabled
+        public bool SequentialDownload { get; set; }
+
         [JsonProperty(PropertyName = "last_activity")] // Timestamp in unix seconds when a chunk was last downloaded/uploaded
         public long LastActivity { get; set; }
     }

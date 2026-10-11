@@ -5,6 +5,7 @@ using FluentAssertions;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.Download.History;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Indexers;
@@ -75,6 +76,71 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             Mocker.GetMock<IHistoryService>()
                 .Setup(s => s.FindByDownloadId(DownloadId))
                 .Returns(history);
+        }
+
+        private void GivenTwoGrabs()
+        {
+            // Episodes 1-35 grabbed (and imported) yesterday, 36-45 of the same bundle grabbed now
+            var history = new List<EpisodeHistory>();
+
+            foreach (var id in Enumerable.Range(1, 45))
+            {
+                var item = new EpisodeHistory
+                {
+                    DownloadId = DownloadId,
+                    EventType = EpisodeHistoryEventType.Grabbed,
+                    SeriesId = 1,
+                    EpisodeId = id,
+                    SourceTitle = Title,
+                    Date = id <= 35 ? DateTime.UtcNow.AddDays(-1) : DateTime.UtcNow
+                };
+
+                item.Data.Add(EpisodeHistory.BUNDLE_SELECTION, "true");
+                history.Add(item);
+            }
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId(DownloadId))
+                .Returns(history.OrderByDescending(h => h.Date).ToList());
+        }
+
+        private void GivenLatestDownloadHistory(DownloadHistoryEventType eventType)
+        {
+            Mocker.GetMock<IDownloadHistoryService>()
+                .Setup(s => s.GetLatestDownloadHistoryItem(DownloadId))
+                .Returns(new DownloadHistory { DownloadId = DownloadId, EventType = eventType });
+        }
+
+        [Test]
+        public void should_only_use_the_latest_grab_of_a_bundle_grabbed_again()
+        {
+            GivenTwoGrabs();
+
+            var trackedDownload = Track();
+
+            trackedDownload.RemoteEpisode.Episodes.Select(e => e.Id).Should().BeEquivalentTo(Enumerable.Range(36, 10));
+        }
+
+        [Test]
+        public void should_track_an_imported_bundle_again_after_it_was_grabbed_again()
+        {
+            GivenTwoGrabs();
+            GivenLatestDownloadHistory(DownloadHistoryEventType.DownloadImported);
+
+            var first = Track();
+            first.State = TrackedDownloadState.Imported;
+
+            // Still finished: the existing tracked download is kept
+            Track().Should().BeSameAs(first);
+
+            GivenLatestDownloadHistory(DownloadHistoryEventType.DownloadGrabbed);
+
+            var second = Track();
+
+            second.Should().NotBeSameAs(first);
+            second.State.Should().Be(TrackedDownloadState.Downloading);
+            second.IsBundleSelection.Should().BeTrue();
+            second.RemoteEpisode.Episodes.Should().HaveCount(10);
         }
 
         private TrackedDownload Track()

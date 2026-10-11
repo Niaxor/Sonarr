@@ -32,6 +32,8 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         void AddTorrentFromFileStopped(string fileName, byte[] fileContent, TorrentSeedConfiguration seedConfiguration, bool sequentialDownload, QBittorrentSettings settings);
         void SetFilePriority(string hash, IEnumerable<int> fileIndexes, int priority, QBittorrentSettings settings);
         void StartTorrent(string hash, QBittorrentSettings settings);
+        QBittorrentTorrent GetTorrent(string hash, QBittorrentSettings settings);
+        void ToggleSequentialDownload(string hash, QBittorrentSettings settings);
     }
 
     public interface IQBittorrentProxySelector

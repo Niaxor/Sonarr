@@ -90,7 +90,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         {
             var existingItem = Find(downloadItem.DownloadId);
 
-            if (existingItem != null && existingItem.State != TrackedDownloadState.Downloading)
+            if (existingItem != null && existingItem.State != TrackedDownloadState.Downloading && !IsRegrabbedBundle(existingItem))
             {
                 LogItemChange(existingItem, existingItem.DownloadItem, downloadItem);
 
@@ -247,10 +247,32 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             }
         }
 
+        // Bundle fast-start: the same bundle torrent can be grabbed again for other episodes (season 1, later season 2).
+        // A finished tracked download is then tracked again as a new active download.
+        private bool IsRegrabbedBundle(TrackedDownload existingItem)
+        {
+            var finished = existingItem.State == TrackedDownloadState.Imported ||
+                           existingItem.State == TrackedDownloadState.Failed ||
+                           existingItem.State == TrackedDownloadState.Ignored;
+
+            if (!existingItem.IsBundleSelection || !finished)
+            {
+                return false;
+            }
+
+            var latest = _downloadHistoryService.GetLatestDownloadHistoryItem(existingItem.DownloadItem.DownloadId);
+
+            return latest != null && latest.EventType is DownloadHistoryEventType.DownloadGrabbed or DownloadHistoryEventType.FileImported;
+        }
+
         private RemoteEpisode MapBundleSelection(ParsedEpisodeInfo parsedEpisodeInfo, List<EpisodeHistory> historyItems)
         {
-            var grabbedHistory = historyItems.Where(h => h.EventType == EpisodeHistoryEventType.Grabbed).ToList();
-            var latestGrab = grabbedHistory.MaxBy(h => h.Date);
+            var allGrabs = historyItems.Where(h => h.EventType == EpisodeHistoryEventType.Grabbed).ToList();
+            var latestGrab = allGrabs.MaxBy(h => h.Date);
+
+            // Only the latest grab: one grab writes its entries within moments, an earlier grab of the same bundle
+            // (another season) was minutes or days before
+            var grabbedHistory = allGrabs.Where(h => h.Date >= latestGrab.Date - TimeSpan.FromMinutes(1)).ToList();
 
             parsedEpisodeInfo ??= Parser.Parser.ParseTitle(latestGrab.SourceTitle) ?? new ParsedEpisodeInfo
             {

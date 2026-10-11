@@ -208,6 +208,15 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             var lowerHash = hash.ToLower();
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
+            // The same bundle may already be in qBittorrent from an earlier request (e.g. season 1, now season 2):
+            // add the newly requested files to it instead of adding it again
+            var existing = Proxy.GetTorrent(lowerHash, Settings);
+
+            if (existing != null)
+            {
+                return AddFilesToExistingBundle(remoteEpisode, existing, hash);
+            }
+
             Proxy.AddTorrentFromFileStopped(filename, fileContent, addHasSetShareLimits ? remoteEpisode.SeedConfiguration : null, selection.SequentialDownload, Settings);
 
             if (!WaitForTorrent(hash, 50))
@@ -292,6 +301,76 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             {
                 Proxy.StartTorrent(lowerHash, Settings);
             }
+
+            return hash;
+        }
+
+        private string AddFilesToExistingBundle(RemoteEpisode remoteEpisode, QBittorrentTorrent existing, string hash)
+        {
+            var selection = remoteEpisode.BundleSelection;
+            var lowerHash = hash.ToLower();
+            var category = existing.Category.IsNotNullOrWhiteSpace() ? existing.Category : existing.Label;
+            var isOurs = Settings.TvCategory.IsNullOrWhiteSpace()
+                ? category.IsNullOrWhiteSpace()
+                : category == Settings.TvCategory || (Settings.TvImportedCategory.IsNotNullOrWhiteSpace() && category == Settings.TvImportedCategory);
+
+            if (!isOurs)
+            {
+                throw new DownloadClientException($"Bundle torrent is already in qBittorrent in category '{category}', not changing a torrent Sonarr does not manage");
+            }
+
+            var clientFiles = GetBundleTorrentFiles(lowerHash);
+            var selectedIndexes = GetFileIndexes(selection.SelectedFiles.Select(f => f.Path).ToList(), clientFiles);
+            var priorityIndexes = GetFileIndexes(selection.PriorityFilePaths, clientFiles);
+
+            if (selectedIndexes.Empty())
+            {
+                throw new DownloadClientException("None of the selected bundle files were found in the file list of the torrent in qBittorrent");
+            }
+
+            // Only raise priorities: files selected by an earlier request stay selected (and keep seeding)
+            var newIndexes = selectedIndexes
+                .Where(i => clientFiles.FirstOrDefault(f => (f.Index ?? clientFiles.IndexOf(f)) == i)?.Priority == 0)
+                .Except(priorityIndexes)
+                .ToList();
+
+            if (newIndexes.Any())
+            {
+                Proxy.SetFilePriority(lowerHash, newIndexes, 1, Settings);
+            }
+
+            if (priorityIndexes.Any())
+            {
+                Proxy.SetFilePriority(lowerHash, priorityIndexes, 7, Settings);
+            }
+
+            if (category != Settings.TvCategory && Settings.TvCategory.IsNotNullOrWhiteSpace())
+            {
+                Proxy.SetTorrentLabel(lowerHash, Settings.TvCategory, Settings);
+            }
+
+            if (selection.SequentialDownload && !existing.SequentialDownload)
+            {
+                Proxy.ToggleSequentialDownload(lowerHash, Settings);
+            }
+
+            var initialState = (QBittorrentState)Settings.InitialState;
+
+            if (initialState == QBittorrentState.ForceStart)
+            {
+                Proxy.SetForceStart(lowerHash, true, Settings);
+            }
+            else if (initialState == QBittorrentState.Start)
+            {
+                // Also restarts a completed torrent that was stopped after seeding
+                Proxy.StartTorrent(lowerHash, Settings);
+            }
+
+            _logger.Info("Bundle '{0}': already in qBittorrent ({1}), selected {2} more files ({3} requested files in total)",
+                remoteEpisode.Release.Title,
+                existing.State,
+                newIndexes.Count + priorityIndexes.Count(i => clientFiles.FirstOrDefault(f => (f.Index ?? clientFiles.IndexOf(f)) == i)?.Priority == 0),
+                selectedIndexes.Count);
 
             return hash;
         }

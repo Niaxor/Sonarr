@@ -35,7 +35,8 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
                 Port = 2222,
                 Username = "admin",
                 Password = "pass",
-                TvCategory = "tv-faststart"
+                TvCategory = "tv-faststart",
+                TvImportedCategory = "tv-faststart-imported"
             };
 
             Mocker.GetMock<ITorrentFileInfoReader>()
@@ -224,6 +225,95 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
         public void should_resolve_remote_file_path(string contentPath, string name, int fileCount, string expected)
         {
             QBittorrent.GetRemoteFilePath(contentPath, name, fileCount).FullPath.Should().Be(expected);
+        }
+
+        private void GivenExistingTorrent(string category, string state, bool sequential, params int[] selectedIndexes)
+        {
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Setup(s => s.GetTorrent(Hash.ToLower(), It.IsAny<QBittorrentSettings>()))
+                .Returns(new QBittorrentTorrent { Hash = Hash.ToLower(), Category = category, State = state, SequentialDownload = sequential });
+
+            // Files of the earlier request stay selected, everything else is "do not download"
+            foreach (var file in _clientFiles)
+            {
+                file.Priority = selectedIndexes.Contains(file.Index ?? -1) ? 1 : 0;
+            }
+        }
+
+        private void GivenNewRequestForEpisodes3And4()
+        {
+            foreach (var file in _selection.Files)
+            {
+                file.Selected = file.Index == 2 || file.Index == 3;
+            }
+
+            _selection.PriorityFilePaths = new List<string> { "Episodes/Naruto - 003.mkv" };
+            _selection.SequentialDownload = true;
+        }
+
+        [Test]
+        public async Task should_add_newly_requested_files_to_a_bundle_already_seeding()
+        {
+            GivenExistingTorrent("tv-faststart", "uploading", false, 0, 1);
+            GivenNewRequestForEpisodes3And4();
+
+            var calls = new List<string>();
+            var proxy = Mocker.GetMock<IQBittorrentProxy>();
+
+            proxy.Setup(v => v.SetFilePriority(It.IsAny<string>(), It.IsAny<IEnumerable<int>>(), It.IsAny<int>(), It.IsAny<QBittorrentSettings>()))
+                .Callback<string, IEnumerable<int>, int, QBittorrentSettings>((h, ids, prio, s) => calls.Add($"prio {prio}: {string.Join(",", ids)}"));
+            proxy.Setup(v => v.StartTorrent(It.IsAny<string>(), It.IsAny<QBittorrentSettings>())).Callback(() => calls.Add("start"));
+            proxy.Setup(v => v.ToggleSequentialDownload(It.IsAny<string>(), It.IsAny<QBittorrentSettings>())).Callback(() => calls.Add("sequential"));
+
+            var id = await Subject.Download(BundleRemoteEpisode(), CreateIndexer());
+
+            id.Should().Be(Hash);
+            calls.Should().Equal("prio 1: 3", "prio 7: 2", "sequential", "start");
+
+            proxy.Verify(v => v.AddTorrentFromFileStopped(It.IsAny<string>(), It.IsAny<byte[]>(), It.IsAny<TorrentSeedConfiguration>(), It.IsAny<bool>(), It.IsAny<QBittorrentSettings>()), Times.Never());
+            proxy.Verify(v => v.SetFilePriority(It.IsAny<string>(), It.IsAny<IEnumerable<int>>(), 0, It.IsAny<QBittorrentSettings>()), Times.Never());
+            proxy.Verify(v => v.RemoveTorrent(It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<QBittorrentSettings>()), Times.Never());
+        }
+
+        [Test]
+        public async Task should_restart_a_completed_stopped_bundle_and_move_it_back_from_the_imported_category()
+        {
+            GivenExistingTorrent("tv-faststart-imported", "stoppedUP", true, 0, 1);
+            GivenNewRequestForEpisodes3And4();
+
+            await Subject.Download(BundleRemoteEpisode(), CreateIndexer());
+
+            var proxy = Mocker.GetMock<IQBittorrentProxy>();
+            proxy.Verify(v => v.SetTorrentLabel(Hash.ToLower(), "tv-faststart", It.IsAny<QBittorrentSettings>()), Times.Once());
+            proxy.Verify(v => v.StartTorrent(Hash.ToLower(), It.IsAny<QBittorrentSettings>()), Times.Once());
+            proxy.Verify(v => v.ToggleSequentialDownload(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()), Times.Never(), "already sequential");
+        }
+
+        [Test]
+        public void should_not_touch_a_bundle_torrent_in_another_category()
+        {
+            GivenExistingTorrent("tv-sonarr", "uploading", false, 0, 1);
+            GivenNewRequestForEpisodes3And4();
+
+            Assert.ThrowsAsync<DownloadClientException>(async () => await Subject.Download(BundleRemoteEpisode(), CreateIndexer()));
+
+            var proxy = Mocker.GetMock<IQBittorrentProxy>();
+            proxy.Verify(v => v.SetFilePriority(It.IsAny<string>(), It.IsAny<IEnumerable<int>>(), It.IsAny<int>(), It.IsAny<QBittorrentSettings>()), Times.Never());
+            proxy.Verify(v => v.SetTorrentLabel(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<QBittorrentSettings>()), Times.Never());
+            proxy.Verify(v => v.StartTorrent(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()), Times.Never());
+        }
+
+        [Test]
+        public async Task should_add_the_torrent_normally_when_it_was_removed_from_qbittorrent()
+        {
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Setup(s => s.GetTorrent(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()))
+                .Returns((QBittorrentTorrent)null);
+
+            await Subject.Download(BundleRemoteEpisode(), CreateIndexer());
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Verify(v => v.AddTorrentFromFileStopped(It.IsAny<string>(), _torrent, It.IsAny<TorrentSeedConfiguration>(), It.IsAny<bool>(), It.IsAny<QBittorrentSettings>()), Times.Once());
         }
 
         [Test]
