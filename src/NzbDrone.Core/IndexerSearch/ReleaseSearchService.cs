@@ -14,6 +14,7 @@ using NzbDrone.Core.Indexers;
 using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.RequestStatus;
 using NzbDrone.Core.Tv;
 
 namespace NzbDrone.Core.IndexerSearch
@@ -34,6 +35,7 @@ namespace NzbDrone.Core.IndexerSearch
         private readonly ISeriesService _seriesService;
         private readonly IEpisodeService _episodeService;
         private readonly IMakeDownloadDecision _makeDownloadDecision;
+        private readonly ISearchOutcomeService _searchOutcomes;
         private readonly Logger _logger;
 
         public ReleaseSearchService(IIndexerFactory indexerFactory,
@@ -41,6 +43,7 @@ namespace NzbDrone.Core.IndexerSearch
                                 ISeriesService seriesService,
                                 IEpisodeService episodeService,
                                 IMakeDownloadDecision makeDownloadDecision,
+                                ISearchOutcomeService searchOutcomes,
                                 Logger logger)
         {
             _indexerFactory = indexerFactory;
@@ -48,6 +51,7 @@ namespace NzbDrone.Core.IndexerSearch
             _seriesService = seriesService;
             _episodeService = episodeService;
             _makeDownloadDecision = makeDownloadDecision;
+            _searchOutcomes = searchOutcomes;
             _logger = logger;
         }
 
@@ -573,7 +577,32 @@ namespace NzbDrone.Core.IndexerSearch
             return spec;
         }
 
+        // Request status: remember which episodes are being searched right now and what each automatic search found
         private async Task<List<DownloadDecision>> Dispatch(Func<IIndexer, Task<IList<ReleaseInfo>>> searchAction, SearchCriteriaBase criteriaBase)
+        {
+            if (criteriaBase.InteractiveSearch)
+            {
+                return await DispatchSearch(searchAction, criteriaBase, null);
+            }
+
+            _searchOutcomes.BeginSearch(criteriaBase);
+
+            try
+            {
+                var found = new int[1];
+                var decisions = await DispatchSearch(searchAction, criteriaBase, found);
+
+                _searchOutcomes.Record(criteriaBase, found[0], decisions);
+
+                return decisions;
+            }
+            finally
+            {
+                _searchOutcomes.EndSearch(criteriaBase);
+            }
+        }
+
+        private async Task<List<DownloadDecision>> DispatchSearch(Func<IIndexer, Task<IList<ReleaseInfo>>> searchAction, SearchCriteriaBase criteriaBase, int[] releasesFound)
         {
             var indexers = criteriaBase.InteractiveSearch ?
                 _indexerFactory.InteractiveSearchEnabled() :
@@ -592,6 +621,11 @@ namespace NzbDrone.Core.IndexerSearch
 
             var reports = batch.SelectMany(x => x).ToList();
             var fetchTime = stopwatch.ElapsedMilliseconds;
+
+            if (releasesFound != null)
+            {
+                releasesFound[0] = reports.Count;
+            }
 
             _logger.ProgressDebug("Total of {0} reports were found for {1} from {2} indexers", reports.Count, criteriaBase, indexers.Count);
 
