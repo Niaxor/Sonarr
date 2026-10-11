@@ -35,6 +35,49 @@ namespace NzbDrone.Core.Test.MediaFiles.EpisodeImport.Aggregation.Aggregators
             Mocker.SetConstant(augmenters.Select(c => c.Object));
         }
 
+        [TestCase("[Anime Time] Naruto Complete (001-220 + Movies) [BD] [Dual Audio][1080p][HEVC 10bit x265][AAC][Eng Sub] [Batch]")]
+        [TestCase("[ENTE] Naruto (2002) S01-S05 (E001-E220) [AV1] [OPUS] [Dual Audio]")]
+        public void should_not_use_series_bundle_download_client_title_for_a_single_file(string bundleTitle)
+        {
+            // A single file imported from a bundle while the rest is still downloading
+            var fileEpisodeInfo = Parser.Parser.ParseTitle("[Anime Time] Naruto - 005 - You Failed! Kakashi's Final Decision.mkv");
+            var downloadClientEpisodeInfo = Parser.Parser.ParseTitle(bundleTitle);
+            var localEpisode = new LocalEpisode
+            {
+                FileEpisodeInfo = fileEpisodeInfo,
+                DownloadClientEpisodeInfo = downloadClientEpisodeInfo,
+                Path = @"C:\Test\Bundle\Season 01\[Anime Time] Naruto - 005 - You Failed! Kakashi's Final Decision.mkv".AsOsAgnostic(),
+                Series = _series,
+                OtherVideoFiles = false
+            };
+
+            Subject.Aggregate(localEpisode, null);
+
+            Mocker.GetMock<IParsingService>()
+                  .Verify(v => v.GetEpisodes(fileEpisodeInfo, _series, localEpisode.SceneSource, null), Times.Once());
+            Mocker.GetMock<IParsingService>()
+                  .Verify(v => v.GetEpisodes(downloadClientEpisodeInfo, _series, It.IsAny<bool>(), null), Times.Never());
+        }
+
+        [Test]
+        public void should_not_use_series_bundle_folder_for_a_single_file()
+        {
+            var fileEpisodeInfo = Parser.Parser.ParseTitle("[Anime Time] Naruto - 005.mkv");
+            var folderEpisodeInfo = Parser.Parser.ParseTitle("[Anime Time] Naruto Complete (001-220 + Movies) [BD] [Dual Audio][1080p]");
+            var localEpisode = new LocalEpisode
+            {
+                FileEpisodeInfo = fileEpisodeInfo,
+                FolderEpisodeInfo = folderEpisodeInfo,
+                Path = @"C:\Test\Bundle\[Anime Time] Naruto - 005.mkv".AsOsAgnostic(),
+                Series = _series
+            };
+
+            Subject.Aggregate(localEpisode, null);
+
+            Mocker.GetMock<IParsingService>()
+                  .Verify(v => v.GetEpisodes(fileEpisodeInfo, _series, localEpisode.SceneSource, null), Times.Once());
+        }
+
         [Test]
         public void should_not_use_folder_for_full_season()
         {

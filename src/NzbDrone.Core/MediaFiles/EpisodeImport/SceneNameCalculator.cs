@@ -12,7 +12,8 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport
             var otherVideoFiles = localEpisode.OtherVideoFiles;
             var downloadClientInfo = localEpisode.DownloadClientEpisodeInfo;
 
-            if (!otherVideoFiles && downloadClientInfo != null && !downloadClientInfo.FullSeason)
+            // Bundle fast-start: a series bundle title is not the scene name of a single file in it
+            if (!otherVideoFiles && downloadClientInfo != null && !downloadClientInfo.FullSeason && !downloadClientInfo.IsSeriesBundle && !downloadClientInfo.IsMultiSeason)
             {
                 return Parser.Parser.RemoveFileExtension(downloadClientInfo.ReleaseTitle);
             }

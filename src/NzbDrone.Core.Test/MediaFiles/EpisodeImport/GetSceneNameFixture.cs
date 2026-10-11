@@ -63,6 +63,18 @@ namespace NzbDrone.Core.Test.MediaFiles.EpisodeImport
         }
 
         [Test]
+        public void should_not_use_download_client_item_title_as_scene_name_if_series_bundle()
+        {
+            _localEpisode.DownloadClientEpisodeInfo = Parser.Parser.ParseTitle("[Anime Time] Naruto Complete (001-220 + Movies) [BD] [Dual Audio][1080p]");
+
+            _localEpisode.Path = Path.Combine(@"C:\Test\Unsorted TV", "Bundle", _episodeName + ".mkv")
+                                     .AsOsAgnostic();
+
+            SceneNameCalculator.GetSceneName(_localEpisode).Should()
+                               .Be(_episodeName);
+        }
+
+        [Test]
         public void should_not_use_download_client_item_title_as_scene_name_if_full_season()
         {
             _localEpisode.DownloadClientEpisodeInfo = new ParsedEpisodeInfo

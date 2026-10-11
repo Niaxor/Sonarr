@@ -34,14 +34,18 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation.Aggregators
 
             if (!localEpisode.OtherVideoFiles && !SceneChecker.IsSceneTitle(Path.GetFileNameWithoutExtension(localEpisode.Path)))
             {
+                // A series bundle title (e.g. "Title Complete (001-220)") never describes a single file in it, which is the
+                // case when files of a bundle are imported one by one while it is still downloading
                 if (downloadClientEpisodeInfo != null &&
                     !downloadClientEpisodeInfo.FullSeason &&
+                    !IsBundle(downloadClientEpisodeInfo) &&
                     PreferOtherEpisodeInfo(parsedEpisodeInfo, downloadClientEpisodeInfo))
                 {
                     parsedEpisodeInfo = localEpisode.DownloadClientEpisodeInfo;
                 }
                 else if (folderEpisodeInfo != null &&
                          !folderEpisodeInfo.FullSeason &&
+                         !IsBundle(folderEpisodeInfo) &&
                          PreferOtherEpisodeInfo(parsedEpisodeInfo, folderEpisodeInfo))
                 {
                     parsedEpisodeInfo = localEpisode.FolderEpisodeInfo;
@@ -54,6 +58,11 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation.Aggregators
             }
 
             return parsedEpisodeInfo;
+        }
+
+        private static bool IsBundle(ParsedEpisodeInfo info)
+        {
+            return info.IsSeriesBundle || info.IsMultiSeason;
         }
 
         private ParsedEpisodeInfo GetSpecialEpisodeInfo(LocalEpisode localEpisode, ParsedEpisodeInfo parsedEpisodeInfo)
