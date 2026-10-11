@@ -164,11 +164,29 @@ namespace NzbDrone.Core.IndexerSearch
             var downloadDecisions = new List<DownloadDecision>();
             var firstEpisode = requestedEpisodes.OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).First();
 
-            var bundleSpec = Get<BundleSearchCriteria>(series, requestedEpisodes, true, userInvokedSearch, false);
-            bundleSpec.EpisodeQueryTitles = BundleSearchCriteria.BuildQueries(series, requestedEpisodes);
-            bundleSpec.BundleRequestedEpisodes = requestedEpisodes;
+            // One query at a time (indexers are rate limited, ~2 s per request): once a query found an acceptable bundle
+            // or pack for the first requested episode, the remaining bundle queries are skipped
+            var queries = BundleSearchCriteria.BuildQueries(series, requestedEpisodes);
 
-            downloadDecisions.AddRange(await Dispatch(indexer => indexer.Fetch(bundleSpec), bundleSpec));
+            for (var i = 0; i < queries.Length; i++)
+            {
+                var bundleSpec = Get<BundleSearchCriteria>(series, requestedEpisodes, true, userInvokedSearch, false);
+                bundleSpec.EpisodeQueryTitles = new[] { queries[i] };
+                bundleSpec.BundleRequestedEpisodes = requestedEpisodes;
+
+                var decisions = await Dispatch(indexer => indexer.Fetch(bundleSpec), bundleSpec);
+                downloadDecisions.AddRange(decisions);
+
+                var found = decisions.Any(d => d.Approved &&
+                                               d.RemoteEpisode.Episodes.Count > 1 &&
+                                               d.RemoteEpisode.Episodes.Any(e => e.Id == firstEpisode.Id));
+
+                if (found && i < queries.Length - 1)
+                {
+                    _logger.Info("Bundle fast-start: '{0}' found a bundle, skipping {1}", queries[i].Replace('+', ' '), string.Join(", ", queries.Skip(i + 1).Select(q => q.Replace('+', ' '))));
+                    break;
+                }
+            }
 
             if (series.SeriesType == SeriesTypes.Anime)
             {

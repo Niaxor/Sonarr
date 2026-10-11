@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.Parser;
@@ -45,15 +47,19 @@ namespace NzbDrone.Core.Download.Bundles
             var candidates = new List<BundleTorrentFile>();
             var parsedFiles = new Dictionary<BundleTorrentFile, ParsedEpisodeInfo>();
 
+            // Parsing every file name is the slow part for large bundles, do it in parallel up front
+            var preParsed = new ConcurrentDictionary<BundleTorrentFile, ParsedEpisodeInfo>();
+
+            Parallel.ForEach(files.Where(f => IsVideoFile(f, videoExtensions) && !DiscStructureRegex.IsMatch(f.Path)),
+                f => preParsed[f] = Parser.Parser.ParseTitle(System.IO.Path.GetFileName(f.Path)));
+
             foreach (var file in files)
             {
                 file.Selected = false;
                 file.EpisodeIds = new List<int>();
                 file.Reason = null;
 
-                var extension = System.IO.Path.GetExtension(file.Path);
-
-                if (extension.IsNullOrWhiteSpace() || !videoExtensions.Contains(extension))
+                if (!IsVideoFile(file, videoExtensions))
                 {
                     file.Reason = "not a video file";
                     continue;
@@ -65,7 +71,7 @@ namespace NzbDrone.Core.Download.Bundles
                     continue;
                 }
 
-                var parsed = Parser.Parser.ParseTitle(System.IO.Path.GetFileName(file.Path));
+                preParsed.TryGetValue(file, out var parsed);
 
                 if (IsExtra(series, file.Path, parsed))
                 {
@@ -236,6 +242,13 @@ namespace NzbDrone.Core.Download.Bundles
             }
 
             return byStandard.Any() ? byStandard : byAbsolute;
+        }
+
+        private static bool IsVideoFile(BundleTorrentFile file, HashSet<string> videoExtensions)
+        {
+            var extension = System.IO.Path.GetExtension(file.Path);
+
+            return extension.IsNotNullOrWhiteSpace() && videoExtensions.Contains(extension);
         }
 
         public static bool IsExtra(Series series, string path, ParsedEpisodeInfo parsedFileName)
