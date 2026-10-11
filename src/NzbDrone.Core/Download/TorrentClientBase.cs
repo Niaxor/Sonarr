@@ -45,11 +45,19 @@ namespace NzbDrone.Core.Download
 
         public virtual bool PreferTorrentFile => false;
 
+        // Bundle fast-start: clients that can download only some files of a torrent (RemoteEpisode.BundleSelection)
+        public virtual bool SupportsBundleFileSelection => false;
+
         protected abstract string AddFromMagnetLink(RemoteEpisode remoteEpisode, string hash, string magnetLink);
         protected abstract string AddFromTorrentFile(RemoteEpisode remoteEpisode, string hash, string filename, byte[] fileContent);
 
         public override async Task<string> Download(RemoteEpisode remoteEpisode, IIndexer indexer)
         {
+            if (remoteEpisode.BundleSelection != null)
+            {
+                return DownloadBundleSelection(remoteEpisode, indexer);
+            }
+
             var torrentInfo = remoteEpisode.Release as TorrentInfo;
 
             string magnetUrl = null;
@@ -212,6 +220,29 @@ namespace NzbDrone.Core.Download
             }
 
             return actualHash;
+        }
+
+        private string DownloadBundleSelection(RemoteEpisode remoteEpisode, IIndexer indexer)
+        {
+            if (!SupportsBundleFileSelection)
+            {
+                throw new ReleaseDownloadException(remoteEpisode.Release, "{0} does not support downloading part of a bundle", Definition.Implementation);
+            }
+
+            // The .torrent was already fetched to decide which files to select, don't download it again
+            var torrentFile = remoteEpisode.BundleSelection.TorrentFile;
+
+            if (torrentFile == null || torrentFile.Length == 0)
+            {
+                throw new ReleaseDownloadException(remoteEpisode.Release, "Bundle selection without a torrent file");
+            }
+
+            var filename = string.Format("{0}.torrent", FileNameBuilder.CleanFileName(remoteEpisode.Release.Title));
+            var hash = _torrentFileInfoReader.GetHashFromTorrentFile(torrentFile);
+
+            EnsureReleaseIsNotBlocklisted(remoteEpisode, indexer, hash);
+
+            return AddFromTorrentFile(remoteEpisode, hash, filename, torrentFile);
         }
 
         private string DownloadFromMagnetUrl(RemoteEpisode remoteEpisode, IIndexer indexer, string magnetUrl)

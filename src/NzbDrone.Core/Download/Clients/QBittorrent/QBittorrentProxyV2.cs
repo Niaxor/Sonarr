@@ -240,16 +240,68 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
         }
 
-        private void AddTorrentDownloadFormParameters(HttpRequestBuilder request, QBittorrentSettings settings)
+        // Bundle fast-start. API: https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0)
+        public void AddTorrentFromFileStopped(string fileName, byte[] fileContent, TorrentSeedConfiguration seedConfiguration, QBittorrentSettings settings)
+        {
+            var request = BuildRequest(settings).Resource("/api/v2/torrents/add")
+                                                .Post()
+                                                .AddFormUpload("torrents", fileName, fileContent);
+
+            AddTorrentDownloadFormParameters(request, settings, true);
+
+            if (seedConfiguration != null)
+            {
+                AddTorrentSeedingFormParameters(request, seedConfiguration);
+            }
+
+            var result = ProcessRequest(request, settings);
+
+            if (result == "Fails.")
+            {
+                throw new DownloadClientException("Download client failed to add torrent");
+            }
+        }
+
+        // torrents/filePrio: hash, id = file indexes separated by '|', priority 0 = do not download, 1 = normal
+        public void SetFilePriority(string hash, IEnumerable<int> fileIndexes, int priority, QBittorrentSettings settings)
+        {
+            var request = BuildRequest(settings).Resource("/api/v2/torrents/filePrio")
+                                                .Post()
+                                                .AddFormParameter("hash", hash)
+                                                .AddFormParameter("id", string.Join("|", fileIndexes))
+                                                .AddFormParameter("priority", priority);
+
+            ProcessRequest(request, settings);
+        }
+
+        // torrents/start in WebUI API 2.11+ (qBittorrent 5.0), torrents/resume before that
+        public void StartTorrent(string hash, QBittorrentSettings settings)
+        {
+            var resource = GetApiVersion(settings) >= new Version(2, 11, 0) ? "/api/v2/torrents/start" : "/api/v2/torrents/resume";
+
+            var request = BuildRequest(settings).Resource(resource)
+                                                .Post()
+                                                .AddFormParameter("hashes", hash);
+
+            ProcessRequest(request, settings);
+        }
+
+        private void AddTorrentDownloadFormParameters(HttpRequestBuilder request, QBittorrentSettings settings, bool addStopped = false)
         {
             if (settings.TvCategory.IsNotNullOrWhiteSpace())
             {
                 request.AddFormParameter("category", settings.TvCategory);
             }
 
-            // Avoid extraneous API version check if initial state is ForceStart
-            if ((QBittorrentState)settings.InitialState is QBittorrentState.Start or QBittorrentState.Stop)
+            if (addStopped)
             {
+                // "stopped" is the WebUI API 2.11+ name and "paused" the older one, send both so either version adds it stopped
+                request.AddFormParameter("stopped", true);
+                request.AddFormParameter("paused", true);
+            }
+            else if ((QBittorrentState)settings.InitialState is QBittorrentState.Start or QBittorrentState.Stop)
+            {
+                // Avoid extraneous API version check if initial state is ForceStart
                 var stoppedParameterName = GetApiVersion(settings) >= new Version(2, 11, 0) ? "stopped" : "paused";
 
                 // Note: ForceStart is handled by separate api call

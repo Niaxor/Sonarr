@@ -23,6 +23,7 @@ namespace NzbDrone.Core.IndexerSearch
         Task<List<DownloadDecision>> EpisodeSearch(Episode episode, bool userInvokedSearch, bool interactiveSearch);
         Task<List<DownloadDecision>> SeasonSearch(int seriesId, int seasonNumber, bool missingOnly, bool monitoredOnly, bool userInvokedSearch, bool interactiveSearch);
         Task<List<DownloadDecision>> SeasonSearch(int seriesId, int seasonNumber, List<Episode> episodes, bool monitoredOnly, bool userInvokedSearch, bool interactiveSearch);
+        Task<List<DownloadDecision>> BundleFastStartSearch(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch);
     }
 
     public class ReleaseSearchService : ISearchForReleases
@@ -148,6 +149,48 @@ namespace NzbDrone.Core.IndexerSearch
 
                     var decisions = await Dispatch(indexer => indexer.Fetch(searchSpec), searchSpec);
                     downloadDecisions.AddRange(decisions);
+                }
+            }
+
+            return DeDupeDecisions(downloadDecisions);
+        }
+
+        // Bundle fast-start: the bundle queries plus the query that covers the first requested episode
+        // (anime: its absolute-number query; standard: its season query). Every decision is made with
+        // BundleRequestedEpisodes set so releases covering more than the request are narrowed instead of rejected.
+        public async Task<List<DownloadDecision>> BundleFastStartSearch(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch)
+        {
+            var downloadDecisions = new List<DownloadDecision>();
+            var firstEpisode = requestedEpisodes.OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).First();
+
+            var bundleSpec = Get<BundleSearchCriteria>(series, requestedEpisodes, true, userInvokedSearch, false);
+            bundleSpec.EpisodeQueryTitles = BundleSearchCriteria.BuildQueries(series, requestedEpisodes);
+            bundleSpec.BundleRequestedEpisodes = requestedEpisodes;
+
+            downloadDecisions.AddRange(await Dispatch(indexer => indexer.Fetch(bundleSpec), bundleSpec));
+
+            if (series.SeriesType == SeriesTypes.Anime)
+            {
+                var animeSpec = Get<AnimeEpisodeSearchCriteria>(series, new List<Episode> { firstEpisode }, true, userInvokedSearch, false);
+                animeSpec.IsSeasonSearch = true;
+                animeSpec.SeasonNumber = firstEpisode.SceneSeasonNumber ?? firstEpisode.SeasonNumber;
+                animeSpec.EpisodeNumber = firstEpisode.SceneEpisodeNumber ?? firstEpisode.EpisodeNumber;
+                animeSpec.AbsoluteEpisodeNumber = firstEpisode.SceneAbsoluteEpisodeNumber ?? firstEpisode.AbsoluteEpisodeNumber ?? 0;
+                animeSpec.BundleRequestedEpisodes = requestedEpisodes;
+
+                downloadDecisions.AddRange(await Dispatch(indexer => indexer.Fetch(animeSpec), animeSpec));
+            }
+            else
+            {
+                var seasonEpisodes = requestedEpisodes.Where(e => e.SeasonNumber == firstEpisode.SeasonNumber).ToList();
+
+                foreach (var mapping in GetSceneSeasonMappings(series, seasonEpisodes))
+                {
+                    var seasonSpec = Get<SeasonSearchCriteria>(series, mapping, true, userInvokedSearch, false);
+                    seasonSpec.SeasonNumber = mapping.SeasonNumber;
+                    seasonSpec.BundleRequestedEpisodes = requestedEpisodes;
+
+                    downloadDecisions.AddRange(await Dispatch(indexer => indexer.Fetch(seasonSpec), seasonSpec));
                 }
             }
 

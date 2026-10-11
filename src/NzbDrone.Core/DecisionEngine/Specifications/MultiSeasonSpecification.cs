@@ -20,6 +20,12 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
         {
             if (subject.ParsedEpisodeInfo.IsMultiSeason)
             {
+                if (searchCriteria != null && searchCriteria.IsBundleFastStart)
+                {
+                    _logger.Debug("Multi-season release {0} accepted for bundle fast-start, files are selected before grabbing", subject.Release.Title);
+                    return DownloadSpecDecision.Accept();
+                }
+
                 _logger.Debug("Multi-season release {0} rejected. Not supported", subject.Release.Title);
                 return DownloadSpecDecision.Reject(DownloadRejectionReason.MultiSeason, "Multi-season releases are not supported");
             }

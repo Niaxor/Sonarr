@@ -42,6 +42,9 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                 return DownloadSpecDecision.Accept();
             }
 
+            // Bundle fast-start: size is validated against every episode in the bundle, not only the requested ones
+            var episodes = subject.BundleEpisodes ?? subject.Episodes;
+
             var seriesRuntime = subject.Series.Runtime;
             var runtime = 0;
 
@@ -50,13 +53,13 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                 var firstSeasonNumber = subject.Series.Seasons.Where(s => s.SeasonNumber > 0).Min(s => s.SeasonNumber);
                 var pilotEpisode = _episodeService.GetEpisodesBySeason(subject.Series.Id, firstSeasonNumber).First();
 
-                if (subject.Episodes.First().SeasonNumber == pilotEpisode.SeasonNumber)
+                if (episodes.First().SeasonNumber == pilotEpisode.SeasonNumber)
                 {
                     // If the first episode has an air date use it, otherwise use the release's publish date because like runtime it may not have updated yet.
                     var gracePeriodEnd = (pilotEpisode.AirDateUtc ?? subject.Release.PublishDate).AddHours(24);
 
                     // If episodes don't have an air date that is okay, otherwise make sure it's within 24 hours of the first episode airing.
-                    if (subject.Episodes.All(e => !e.AirDateUtc.HasValue || e.AirDateUtc.Value.Before(gracePeriodEnd)))
+                    if (episodes.All(e => !e.AirDateUtc.HasValue || e.AirDateUtc.Value.Before(gracePeriodEnd)))
                     {
                         _logger.Debug("Series runtime is 0, but all episodes in release aired within 24 hours of first episode in season, defaulting runtime to 45 minutes");
                         seriesRuntime = 45;
@@ -66,7 +69,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
 
             // For each episode use the runtime of the episode or fallback to the series runtime
             // (which in turn might have fallen back to a default runtime of 45)
-            foreach (var episode in subject.Episodes)
+            foreach (var episode in episodes)
             {
                 runtime += episode.Runtime > 0 ? episode.Runtime : seriesRuntime;
             }
@@ -90,7 +93,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                 // If the parsed size is smaller than minSize we don't want it
                 if (subject.Release.Size < minSize)
                 {
-                    var runtimeMessage = subject.Episodes.Count == 1 ? $"{runtime}min" : $"{subject.Episodes.Count}x {runtime}min";
+                    var runtimeMessage = episodes.Count == 1 ? $"{runtime}min" : $"{episodes.Count}x {runtime}min";
 
                     _logger.Debug("Item: {0}, Size: {1} is smaller than minimum allowed size ({2} bytes for {3}), rejecting.", subject, subject.Release.Size, minSize, runtimeMessage);
                     return DownloadSpecDecision.Reject(DownloadRejectionReason.BelowMinimumSize, "{0} is smaller than minimum allowed {1} (for {2})", subject.Release.Size.SizeSuffix(), minSize.SizeSuffix(), runtimeMessage);
@@ -111,7 +114,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                 // If the parsed size is greater than maxSize we don't want it
                 if (subject.Release.Size > maxSize)
                 {
-                    var runtimeMessage = subject.Episodes.Count == 1 ? $"{runtime}min" : $"{subject.Episodes.Count}x {runtime}min";
+                    var runtimeMessage = episodes.Count == 1 ? $"{runtime}min" : $"{episodes.Count}x {runtime}min";
 
                     _logger.Debug("Item: {0}, Size: {1} is greater than maximum allowed size ({2} for {3}), rejecting", subject, subject.Release.Size, maxSize, runtimeMessage);
                     return DownloadSpecDecision.Reject(DownloadRejectionReason.AboveMaximumSize, "{0} is larger than maximum allowed {1} (for {2})", subject.Release.Size.SizeSuffix(), maxSize.SizeSuffix(), runtimeMessage);

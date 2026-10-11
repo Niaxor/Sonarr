@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using NzbDrone.Core.CustomFormats;
 using NzbDrone.Core.DataAugmentation.Scene;
+using NzbDrone.Core.Download.Bundles;
 using NzbDrone.Core.Download.Clients;
 using NzbDrone.Core.Languages;
 using NzbDrone.Core.Tv;
@@ -25,6 +26,14 @@ namespace NzbDrone.Core.Parser.Model
         public SeriesMatchType SeriesMatchType { get; set; }
         public List<Language> Languages { get; set; }
         public ReleaseSourceType ReleaseSource { get; set; }
+
+        // Bundle fast-start: every episode the release covers when Episodes was narrowed to the requested episodes
+        public List<Episode> BundleEpisodes { get; set; }
+
+        // Bundle fast-start: the torrent and the files to download when only part of a bundle is grabbed
+        public BundleFileSelection BundleSelection { get; set; }
+
+        public bool IsNarrowedBundle => BundleEpisodes != null;
 
         public RemoteEpisode()
         {

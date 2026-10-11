@@ -112,6 +112,8 @@ namespace NzbDrone.Core.DecisionEngine
                         }
                         else
                         {
+                            NarrowBundleToRequestedEpisodes(remoteEpisode, searchCriteria);
+
                             _aggregationService.Augment(remoteEpisode);
 
                             remoteEpisode.CustomFormats = _formatCalculator.ParseCustomFormat(remoteEpisode, remoteEpisode.Release.Size);
@@ -192,6 +194,35 @@ namespace NzbDrone.Core.DecisionEngine
                     yield return decision;
                 }
             }
+        }
+
+        // Bundle fast-start: a release that covers requested and non-requested episodes (series bundle, multi-season
+        // or larger pack) is narrowed to the requested episodes so the remaining specifications, ranking and grab
+        // history only consider what was asked for. The full list is kept for size validation.
+        private void NarrowBundleToRequestedEpisodes(RemoteEpisode remoteEpisode, SearchCriteriaBase searchCriteria)
+        {
+            if (searchCriteria == null || !searchCriteria.IsBundleFastStart || remoteEpisode.Episodes.Count < 2)
+            {
+                return;
+            }
+
+            if (remoteEpisode.Series.Id != searchCriteria.Series.Id)
+            {
+                return;
+            }
+
+            var requestedIds = searchCriteria.BundleRequestedEpisodes.Select(e => e.Id).ToHashSet();
+            var requested = remoteEpisode.Episodes.Where(e => requestedIds.Contains(e.Id)).ToList();
+
+            if (requested.Empty() || requested.Count == remoteEpisode.Episodes.Count)
+            {
+                return;
+            }
+
+            _logger.Debug("Bundle '{0}' covers {1} episodes, narrowed to {2} requested episodes", remoteEpisode.Release.Title, remoteEpisode.Episodes.Count, requested.Count);
+
+            remoteEpisode.BundleEpisodes = remoteEpisode.Episodes;
+            remoteEpisode.Episodes = requested;
         }
 
         private DownloadDecision GetDecisionForReport(RemoteEpisode remoteEpisode, SearchCriteriaBase searchCriteria = null)

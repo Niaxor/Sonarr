@@ -10,6 +10,7 @@ using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.Blocklisting;
 using NzbDrone.Core.Configuration;
+using NzbDrone.Core.Download.Bundles;
 using NzbDrone.Core.Localization;
 using NzbDrone.Core.MediaFiles.TorrentInfo;
 using NzbDrone.Core.Parser.Model;
@@ -130,8 +131,15 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             return hash;
         }
 
+        public override bool SupportsBundleFileSelection => true;
+
         protected override string AddFromTorrentFile(RemoteEpisode remoteEpisode, string hash, string filename, byte[] fileContent)
         {
+            if (remoteEpisode.BundleSelection != null)
+            {
+                return AddBundleFromTorrentFile(remoteEpisode, hash, filename, fileContent);
+            }
+
             var setShareLimits = remoteEpisode.SeedConfiguration != null && (remoteEpisode.SeedConfiguration.Ratio.HasValue || remoteEpisode.SeedConfiguration.SeedTime.HasValue);
             var addHasSetShareLimits = setShareLimits && ProxyApiVersion >= new Version(2, 8, 1);
             var isRecentEpisode = remoteEpisode.IsRecentEpisode();
@@ -187,10 +195,148 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             return hash;
         }
 
+        // Bundle fast-start: add the torrent stopped, set every file that was not selected to "do not download" (priority 0),
+        // then start it according to the client's initial state. Nothing is downloaded before the priorities are set.
+        private string AddBundleFromTorrentFile(RemoteEpisode remoteEpisode, string hash, string filename, byte[] fileContent)
+        {
+            var selection = remoteEpisode.BundleSelection;
+            var setShareLimits = remoteEpisode.SeedConfiguration != null && (remoteEpisode.SeedConfiguration.Ratio.HasValue || remoteEpisode.SeedConfiguration.SeedTime.HasValue);
+            var addHasSetShareLimits = setShareLimits && ProxyApiVersion >= new Version(2, 8, 1);
+            var isRecentEpisode = remoteEpisode.IsRecentEpisode();
+            var moveToTop = (isRecentEpisode && Settings.RecentTvPriority == (int)QBittorrentPriority.First) || (!isRecentEpisode && Settings.OlderTvPriority == (int)QBittorrentPriority.First);
+            var initialState = (QBittorrentState)Settings.InitialState;
+            var lowerHash = hash.ToLower();
+
+            Proxy.AddTorrentFromFileStopped(filename, fileContent, addHasSetShareLimits ? remoteEpisode.SeedConfiguration : null, Settings);
+
+            if (!WaitForTorrent(hash, 50))
+            {
+                throw new DownloadClientException("Bundle torrent was added stopped but did not appear in qBittorrent, files could not be selected. Remove it from qBittorrent or select its files manually.");
+            }
+
+            try
+            {
+                var clientFiles = GetBundleTorrentFiles(lowerHash);
+                var unselected = GetUnselectedFileIndexes(selection, clientFiles, out var selectedCount);
+
+                if (selectedCount == 0)
+                {
+                    throw new DownloadClientException("None of the selected bundle files were found in the file list of the torrent in qBittorrent");
+                }
+
+                if (selectedCount < selection.SelectedFiles.Count)
+                {
+                    _logger.Warn("Only {0} of {1} selected bundle files were found in qBittorrent for {2}", selectedCount, selection.SelectedFiles.Count, remoteEpisode.Release.Title);
+                }
+
+                if (unselected.Any())
+                {
+                    Proxy.SetFilePriority(lowerHash, unselected, 0, Settings);
+                }
+
+                _logger.Debug("Bundle '{0}': downloading {1} of {2} files", remoteEpisode.Release.Title, selectedCount, clientFiles.Count);
+            }
+            catch (Exception)
+            {
+                // Do not leave a stopped torrent behind that would download everything when started manually
+                try
+                {
+                    Proxy.RemoveTorrent(lowerHash, false, Settings);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, "Failed to remove bundle torrent {0} after file selection failed", hash);
+                }
+
+                throw;
+            }
+
+            if (!addHasSetShareLimits && setShareLimits)
+            {
+                try
+                {
+                    Proxy.SetTorrentSeedingConfiguration(lowerHash, remoteEpisode.SeedConfiguration, Settings);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, "Failed to set the torrent seed criteria for {0}.", hash);
+                }
+            }
+
+            if (moveToTop)
+            {
+                try
+                {
+                    Proxy.MoveTorrentToTopInQueue(lowerHash, Settings);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, "Failed to set the torrent priority for {0}.", hash);
+                }
+            }
+
+            if (initialState == QBittorrentState.ForceStart)
+            {
+                Proxy.SetForceStart(lowerHash, true, Settings);
+            }
+            else if (initialState == QBittorrentState.Start)
+            {
+                Proxy.StartTorrent(lowerHash, Settings);
+            }
+
+            return hash;
+        }
+
+        private List<QBittorrentTorrentFile> GetBundleTorrentFiles(string hash)
+        {
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                var files = Proxy.GetTorrentFiles(hash, Settings);
+
+                if (files != null && files.Any())
+                {
+                    return files;
+                }
+
+                System.Threading.Thread.Sleep(250);
+            }
+
+            throw new DownloadClientException("qBittorrent did not return the file list of the bundle torrent");
+        }
+
+        // Matches qBittorrent file names (which may include the torrent root folder) to the selected torrent paths
+        public static List<int> GetUnselectedFileIndexes(BundleFileSelection selection, List<QBittorrentTorrentFile> clientFiles, out int selectedCount)
+        {
+            var selectedPaths = selection.SelectedFiles.Select(f => f.Path.Replace('\\', '/')).ToList();
+            var unselected = new List<int>();
+
+            selectedCount = 0;
+
+            for (var i = 0; i < clientFiles.Count; i++)
+            {
+                var name = clientFiles[i].Name.Replace('\\', '/');
+                var index = clientFiles[i].Index ?? i;
+
+                if (selectedPaths.Any(p => name.Equals(p, StringComparison.Ordinal) || name.EndsWith("/" + p, StringComparison.Ordinal)))
+                {
+                    selectedCount++;
+                }
+                else
+                {
+                    unselected.Add(index);
+                }
+            }
+
+            return unselected;
+        }
+
         protected bool WaitForTorrent(string hash)
         {
-            var count = 10;
+            return WaitForTorrent(hash, 10);
+        }
 
+        protected bool WaitForTorrent(string hash, int count)
+        {
             while (count != 0)
             {
                 try

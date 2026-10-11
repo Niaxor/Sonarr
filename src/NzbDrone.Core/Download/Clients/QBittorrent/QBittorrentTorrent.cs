@@ -58,6 +58,12 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
 
     public class QBittorrentTorrentFile
     {
-        public string Name { get; set; }
+        public int? Index { get; set; } // File index (WebUI API 2.8.2+), otherwise the position in the list
+
+        public string Name { get; set; } // File name including relative path
+
+        public long Size { get; set; }
+
+        public int Priority { get; set; } // 0 = do not download, 1 = normal, 6 = high, 7 = maximal
     }
 }

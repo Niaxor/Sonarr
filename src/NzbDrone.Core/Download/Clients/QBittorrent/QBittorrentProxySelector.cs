@@ -27,6 +27,11 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         void SetTorrentSeedingConfiguration(string hash, TorrentSeedConfiguration seedConfiguration, QBittorrentSettings settings);
         void MoveTorrentToTopInQueue(string hash, QBittorrentSettings settings);
         void SetForceStart(string hash, bool enabled, QBittorrentSettings settings);
+
+        // Bundle fast-start: add a torrent without starting it, so file priorities can be set before anything downloads
+        void AddTorrentFromFileStopped(string fileName, byte[] fileContent, TorrentSeedConfiguration seedConfiguration, QBittorrentSettings settings);
+        void SetFilePriority(string hash, IEnumerable<int> fileIndexes, int priority, QBittorrentSettings settings);
+        void StartTorrent(string hash, QBittorrentSettings settings);
     }
 
     public interface IQBittorrentProxySelector

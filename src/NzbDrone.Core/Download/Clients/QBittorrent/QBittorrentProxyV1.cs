@@ -264,6 +264,21 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
         }
 
+        public void AddTorrentFromFileStopped(string fileName, byte[] fileContent, TorrentSeedConfiguration seedConfiguration, QBittorrentSettings settings)
+        {
+            throw new DownloadClientException("Downloading part of a bundle requires qBittorrent 4.1 or newer (WebUI API v2)");
+        }
+
+        public void SetFilePriority(string hash, IEnumerable<int> fileIndexes, int priority, QBittorrentSettings settings)
+        {
+            throw new DownloadClientException("Downloading part of a bundle requires qBittorrent 4.1 or newer (WebUI API v2)");
+        }
+
+        public void StartTorrent(string hash, QBittorrentSettings settings)
+        {
+            throw new DownloadClientException("Downloading part of a bundle requires qBittorrent 4.1 or newer (WebUI API v2)");
+        }
+
         public void SetForceStart(string hash, bool enabled, QBittorrentSettings settings)
         {
             var request = BuildRequest(settings).Resource("/command/setForceStart")

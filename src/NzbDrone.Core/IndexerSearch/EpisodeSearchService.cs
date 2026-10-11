@@ -8,6 +8,7 @@ using NzbDrone.Common.Instrumentation.Extensions;
 using NzbDrone.Core.Datastore;
 using NzbDrone.Core.DecisionEngine;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.Download.Bundles;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Queue;
 using NzbDrone.Core.Tv;
@@ -23,6 +24,8 @@ namespace NzbDrone.Core.IndexerSearch
         private readonly IEpisodeService _episodeService;
         private readonly IEpisodeCutoffService _episodeCutoffService;
         private readonly IQueueService _queueService;
+        private readonly IBundleFastStartService _bundleFastStartService;
+        private readonly ISeriesService _seriesService;
         private readonly Logger _logger;
 
         public EpisodeSearchService(ISearchForReleases releaseSearchService,
@@ -30,6 +33,8 @@ namespace NzbDrone.Core.IndexerSearch
                                     IEpisodeService episodeService,
                                     IEpisodeCutoffService episodeCutoffService,
                                     IQueueService queueService,
+                                    IBundleFastStartService bundleFastStartService,
+                                    ISeriesService seriesService,
                                     Logger logger)
         {
             _releaseSearchService = releaseSearchService;
@@ -37,14 +42,33 @@ namespace NzbDrone.Core.IndexerSearch
             _episodeService = episodeService;
             _episodeCutoffService = episodeCutoffService;
             _queueService = queueService;
+            _bundleFastStartService = bundleFastStartService;
+            _seriesService = seriesService;
             _logger = logger;
         }
 
-        private async Task SearchForBulkEpisodes(List<Episode> episodes, bool monitoredOnly, bool userInvokedSearch)
+        private async Task SearchForBulkEpisodes(List<Episode> episodes, bool monitoredOnly, bool userInvokedSearch, bool bundleFastStart = false)
         {
             _logger.ProgressInfo("Performing search for {0} episodes", episodes.Count);
             var downloadedCount = 0;
             var groups = new List<EpisodeSearchGroup>();
+
+            if (bundleFastStart)
+            {
+                // Bundle fast-start: try to grab a bundle covering the request before the per-season searches,
+                // then only search for the episodes it doesn't cover.
+                foreach (var seriesEpisodes in episodes.GroupBy(e => e.SeriesId).ToList())
+                {
+                    var series = _seriesService.GetSeries(seriesEpisodes.Key);
+                    var result = await _bundleFastStartService.SearchAndGrab(series, seriesEpisodes.ToList(), monitoredOnly, userInvokedSearch);
+
+                    if (result != null && result.CoveredEpisodeIds.Any())
+                    {
+                        downloadedCount += result.Grabbed;
+                        episodes = episodes.Where(e => !result.CoveredEpisodeIds.Contains(e.Id)).ToList();
+                    }
+                }
+            }
 
             foreach (var series in episodes.GroupBy(e => e.SeriesId))
             {
@@ -157,7 +181,8 @@ namespace NzbDrone.Core.IndexerSearch
             var queue = _queueService.GetQueue().Where(q => q.Episode != null).Select(q => q.Episode.Id);
             var missing = episodes.Where(e => !queue.Contains(e.Id)).ToList();
 
-            SearchForBulkEpisodes(missing, monitored, message.Trigger == CommandTrigger.Manual).GetAwaiter().GetResult();
+            // Bundle fast-start only for a single series (e.g. searching after the series was added), not library-wide searches
+            SearchForBulkEpisodes(missing, monitored, message.Trigger == CommandTrigger.Manual, message.SeriesId.HasValue).GetAwaiter().GetResult();
         }
 
         public void Execute(CutoffUnmetEpisodeSearchCommand message)

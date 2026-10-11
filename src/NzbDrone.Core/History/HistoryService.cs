@@ -183,6 +183,13 @@ namespace NzbDrone.Core.History
                     history.Data.Add("TorrentInfoHash", torrentRelease.InfoHash);
                 }
 
+                if (message.Episode.BundleSelection != null)
+                {
+                    history.Data.Add(EpisodeHistory.BUNDLE_SELECTION, "true");
+                    history.Data.Add("BundleSelectedFiles", message.Episode.BundleSelection.SelectedFiles.Count.ToString());
+                    history.Data.Add("BundleTotalFiles", message.Episode.BundleSelection.Files.Count.ToString());
+                }
+
                 _historyRepository.Insert(history);
             }
         }
