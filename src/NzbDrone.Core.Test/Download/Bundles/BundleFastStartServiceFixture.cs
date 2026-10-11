@@ -206,8 +206,60 @@ namespace NzbDrone.Core.Test.Download.Bundles
         }
 
         [Test]
-        public async Task should_grab_season_pack_matching_request_without_file_selection()
+        public async Task should_select_files_when_request_covers_the_whole_bundle()
         {
+            // Every episode of the bundle is requested, the movies must still be skipped
+            var allEpisodes = _episodes.Where(e => e.SeasonNumber > 0).ToList();
+            GivenRelease("[Anime Time] Naruto Complete (001-220 + Movies) [BD] [Dual Audio][1080p]", allEpisodes.ToList());
+
+            var result = await Subject.SearchAndGrab(_series, allEpisodes, true, false);
+
+            result.CoveredEpisodeIds.Should().HaveCount(220);
+            _grabbedClientId.Should().Be(7);
+            _grabbed.IsNarrowedBundle.Should().BeFalse();
+            _grabbed.BundleSelection.Should().NotBeNull();
+            _grabbed.BundleSelection.SelectedFiles.Should().HaveCount(220);
+            _grabbed.BundleSelection.SelectedFiles.Should().NotContain(f => f.Path.StartsWith("Movies/"));
+            _grabbed.BundleSelection.Files.Single(f => f.Path.StartsWith("Movies/")).Selected.Should().BeFalse();
+            _grabbed.Episodes.Should().HaveCount(220);
+        }
+
+        [Test]
+        public async Task should_fall_back_when_whole_series_bundle_files_cannot_be_mapped()
+        {
+            _torrent = BundleTestData.BuildTorrent("Naruto Complete", Enumerable.Range(1, 10).Select(i => ($"Disc {i}/Feature.mkv", 1_000_000_000L)));
+            var allEpisodes = _episodes.Where(e => e.SeasonNumber > 0).ToList();
+            GivenRelease("[Anime Time] Naruto Complete (001-220 + Movies) [BD] [Dual Audio][1080p]", allEpisodes.ToList());
+
+            var result = await Subject.SearchAndGrab(_series, allEpisodes, true, false);
+
+            result.CoveredEpisodeIds.Should().BeEmpty();
+            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+        }
+
+        [Test]
+        public async Task should_select_files_of_season_pack_with_qbittorrent()
+        {
+            GivenRelease("[Group] Naruto S01 [1080p]", _season1.ToList());
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.CoveredEpisodeIds.Should().HaveCount(35);
+            _grabbed.BundleSelection.Should().NotBeNull();
+            _grabbed.BundleSelection.SelectedFiles.Should().HaveCount(35);
+            _grabbedClientId.Should().Be(7);
+        }
+
+        [Test]
+        public async Task should_grab_season_pack_without_file_selection_on_another_client()
+        {
+            var other = Mocker.GetMock<IDownloadClient>();
+            other.SetupGet(c => c.Definition).Returns(new DownloadClientDefinition { Id = 3, Name = "Transmission" });
+
+            Mocker.GetMock<IProvideDownloadClient>()
+                .Setup(s => s.GetDownloadClient(DownloadProtocol.Torrent, It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<HashSet<int>>()))
+                .Returns(other.Object);
+
             GivenRelease("[Group] Naruto S01 [1080p]", _season1.ToList());
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
@@ -215,6 +267,18 @@ namespace NzbDrone.Core.Test.Download.Bundles
             result.CoveredEpisodeIds.Should().HaveCount(35);
             _grabbed.BundleSelection.Should().BeNull();
             _grabbedClientId.Should().BeNull();
+        }
+
+        [Test]
+        public async Task should_grab_season_pack_without_file_selection_when_files_cannot_be_mapped()
+        {
+            _torrent = BundleTestData.BuildTorrent("Naruto S01", Enumerable.Range(1, 10).Select(i => ($"Disc {i}/Feature.mkv", 1_000_000_000L)));
+            GivenRelease("[Group] Naruto S01 [1080p]", _season1.ToList());
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.CoveredEpisodeIds.Should().HaveCount(35);
+            _grabbed.BundleSelection.Should().BeNull();
         }
 
         [Test]

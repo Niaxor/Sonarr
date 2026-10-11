@@ -151,6 +151,19 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
         }
 
         [Test]
+        public void import_should_mark_whole_bundle_selection_as_imported()
+        {
+            // Request covered every episode of the bundle; only the movies/extras were deselected
+            _selectedEpisodes = _allEpisodes;
+            GivenGrabHistory(true);
+            GivenImportedEpisodes(_allEpisodes);
+
+            Subject.Import(_trackedDownload);
+
+            _trackedDownload.State.Should().Be(TrackedDownloadState.Imported);
+        }
+
+        [Test]
         public void stock_behaviour_without_bundle_selection_blocks_partial_import()
         {
             // Documents the blocker the bundle selection flag fixes: same import, but the grab was not marked as a partial bundle

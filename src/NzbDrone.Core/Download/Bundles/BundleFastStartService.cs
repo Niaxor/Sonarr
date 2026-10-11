@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
@@ -129,10 +130,15 @@ namespace NzbDrone.Core.Download.Bundles
             }
 
             var firstEpisode = requested.First();
+            var total = Stopwatch.StartNew();
+            var phase = Stopwatch.StartNew();
 
             _logger.ProgressInfo("Bundle fast-start: searching for bundles of {0} covering {1} requested episodes", series.Title, requested.Count);
 
             var decisions = await _releaseSearchService.BundleFastStartSearch(series, requested, userInvokedSearch);
+
+            _logger.Info("Bundle fast-start timing: searches and decisions took {0} ms ({1} releases)", phase.ElapsedMilliseconds, decisions.Count);
+            phase.Restart();
 
             var candidates = decisions
                 .Where(d => d.Approved && d.RemoteEpisode.Episodes.Any(e => e.Id == firstEpisode.Id))
@@ -140,16 +146,19 @@ namespace NzbDrone.Core.Download.Bundles
 
             if (candidates.Empty())
             {
-                _logger.Debug("Bundle fast-start: no acceptable release found for {0} {1}x{2:00}", series.Title, firstEpisode.SeasonNumber, firstEpisode.EpisodeNumber);
+                _logger.Info("Bundle fast-start: no acceptable release found for {0} {1}x{2:00}, continuing with the normal search", series.Title, firstEpisode.SeasonNumber, firstEpisode.EpisodeNumber);
                 return BundleFastStartResult.None;
             }
 
             var winner = _prioritizeDownloadDecision.PrioritizeDecisions(candidates).First();
             var remoteEpisode = winner.RemoteEpisode;
 
+            _logger.Info("Bundle fast-start timing: ranking {0} candidates took {1} ms, best is '{2}' ({3} episodes)", candidates.Count, phase.ElapsedMilliseconds, remoteEpisode.Release.Title, remoteEpisode.Episodes.Count);
+            phase.Restart();
+
             if (!remoteEpisode.IsNarrowedBundle && remoteEpisode.Episodes.Count < 2)
             {
-                _logger.Debug("Bundle fast-start: best release for {0} {1}x{2:00} is a single episode ({3}), continuing with the normal search",
+                _logger.Info("Bundle fast-start: best release for {0} {1}x{2:00} is a single episode ({3}), continuing with the normal search",
                     series.Title,
                     firstEpisode.SeasonNumber,
                     firstEpisode.EpisodeNumber,
@@ -158,28 +167,42 @@ namespace NzbDrone.Core.Download.Bundles
                 return BundleFastStartResult.None;
             }
 
+            // Series bundles (complete series, batches, multi-season packs) and packs covering more than the request are only
+            // grabbed with file selection. A plain season pack that matches the request may still be grabbed as a whole.
+            var requiresSelection = remoteEpisode.IsNarrowedBundle ||
+                                    remoteEpisode.ParsedEpisodeInfo?.IsSeriesBundle == true ||
+                                    remoteEpisode.ParsedEpisodeInfo?.IsMultiSeason == true;
+
             int? downloadClientId = null;
+            var downloadClient = GetDownloadClient(remoteEpisode);
 
-            if (remoteEpisode.IsNarrowedBundle)
+            if (downloadClient is QBittorrent)
             {
-                var downloadClient = GetDownloadClient(remoteEpisode);
-
-                if (downloadClient is not QBittorrent)
+                // Always select files with qBittorrent, even when every episode in the bundle was requested,
+                // so movies, openings/endings and extras are never downloaded.
+                if (await SelectBundleFiles(series, remoteEpisode, firstEpisode))
                 {
-                    _logger.Info("Bundle fast-start: '{0}' would be sent to {1}, partial bundle downloads are only supported with qBittorrent. Continuing with the normal search",
-                        remoteEpisode.Release.Title,
-                        downloadClient?.Definition?.Name ?? "no download client");
-
-                    return BundleFastStartResult.None;
+                    downloadClientId = downloadClient.Definition.Id;
                 }
-
-                if (!await SelectBundleFiles(series, remoteEpisode, firstEpisode))
+                else if (requiresSelection)
                 {
                     return BundleFastStartResult.None;
                 }
-
-                downloadClientId = downloadClient.Definition.Id;
+                else
+                {
+                    _logger.Info("Bundle fast-start: grabbing season pack '{0}' without file selection", remoteEpisode.Release.Title);
+                }
             }
+            else if (requiresSelection)
+            {
+                _logger.Info("Bundle fast-start: '{0}' would be sent to {1}, bundle downloads with file selection are only supported with qBittorrent. Continuing with the normal search",
+                    remoteEpisode.Release.Title,
+                    downloadClient?.Definition?.Name ?? "no download client");
+
+                return BundleFastStartResult.None;
+            }
+
+            phase.Restart();
 
             try
             {
@@ -191,14 +214,17 @@ namespace NzbDrone.Core.Download.Bundles
                 return BundleFastStartResult.None;
             }
 
+            _logger.Info("Bundle fast-start timing: sending to the download client took {0} ms", phase.ElapsedMilliseconds);
+
             var requestedIds = requested.Select(e => e.Id).ToHashSet();
             var covered = remoteEpisode.Episodes.Select(e => e.Id).Where(requestedIds.Contains).ToHashSet();
 
-            _logger.ProgressInfo("Bundle fast-start: grabbed '{0}' for {1} of {2} requested episodes of {3}",
+            _logger.ProgressInfo("Bundle fast-start: grabbed '{0}' for {1} of {2} requested episodes of {3} ({4} ms in total)",
                 remoteEpisode.Release.Title,
                 covered.Count,
                 requested.Count,
-                series.Title);
+                series.Title,
+                total.ElapsedMilliseconds);
 
             return new BundleFastStartResult
             {
@@ -222,7 +248,11 @@ namespace NzbDrone.Core.Download.Bundles
 
         private async Task<bool> SelectBundleFiles(Series series, RemoteEpisode remoteEpisode, Episode firstEpisode)
         {
+            var stopwatch = Stopwatch.StartNew();
             var torrentFile = await FetchTorrentFile(remoteEpisode);
+
+            _logger.Info("Bundle fast-start timing: fetching the .torrent took {0} ms ({1} bytes)", stopwatch.ElapsedMilliseconds, torrentFile?.Length ?? 0);
+            stopwatch.Restart();
 
             if (torrentFile == null)
             {
@@ -234,6 +264,8 @@ namespace NzbDrone.Core.Download.Bundles
             var seriesEpisodes = _episodeService.GetEpisodeBySeries(series.Id);
             var selection = BundleFileMapper.Map(series, seriesEpisodes, remoteEpisode.Episodes, firstEpisode, files, remoteEpisode.ParsedEpisodeInfo);
 
+            _logger.Info("Bundle fast-start timing: mapping {0} torrent files took {1} ms", files.Count, stopwatch.ElapsedMilliseconds);
+
             foreach (var file in selection.Files)
             {
                 _logger.Debug("Bundle fast-start: '{0}' file {1}", remoteEpisode.Release.Title, file);
@@ -241,7 +273,7 @@ namespace NzbDrone.Core.Download.Bundles
 
             if (!selection.IsReliable)
             {
-                _logger.Info("Bundle fast-start: '{0}' is not usable ({1}), continuing with the normal search", remoteEpisode.Release.Title, selection.Reason);
+                _logger.Info("Bundle fast-start: files of '{0}' can't be selected reliably ({1})", remoteEpisode.Release.Title, selection.Reason);
                 return false;
             }
 
