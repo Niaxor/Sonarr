@@ -199,17 +199,33 @@ namespace NzbDrone.Core.Download
 
         public bool VerifyImport(TrackedDownload trackedDownload, List<ImportResult> importResults)
         {
-            var allEpisodesImported = importResults.Where(c => c.Result == ImportResultType.Imported)
-                                                   .SelectMany(c => c.ImportDecision.LocalEpisode.Episodes)
-                                                   .Count() >= Math.Max(1,
-                                          trackedDownload.RemoteEpisode.Episodes.Count);
-
             var historyItems = _historyService.FindByDownloadId(trackedDownload.DownloadItem.DownloadId)
                 .OrderByDescending(h => h.Date)
                 .ToList();
 
             var grabbedHistory = historyItems.Where(h => h.EventType == EpisodeHistoryEventType.Grabbed).ToList();
             var releaseInfo = grabbedHistory.Count > 0 ? new GrabbedReleaseInfo(grabbedHistory) : null;
+
+            bool allEpisodesImported;
+
+            if (grabbedHistory.Any(h => h.IsBundleSelectionGrab()))
+            {
+                // Bundle fast-start: only the selected files were downloaded, expect exactly the episodes recorded at grab time
+                var expectedEpisodeIds = grabbedHistory.Select(h => h.EpisodeId).ToHashSet();
+                var importedEpisodeIds = importResults.Where(c => c.Result == ImportResultType.Imported)
+                                                      .SelectMany(c => c.ImportDecision.LocalEpisode.Episodes)
+                                                      .Select(e => e.Id)
+                                                      .ToHashSet();
+
+                allEpisodesImported = expectedEpisodeIds.All(importedEpisodeIds.Contains);
+            }
+            else
+            {
+                allEpisodesImported = importResults.Where(c => c.Result == ImportResultType.Imported)
+                                                   .SelectMany(c => c.ImportDecision.LocalEpisode.Episodes)
+                                                   .Count() >= Math.Max(1,
+                                          trackedDownload.RemoteEpisode.Episodes.Count);
+            }
 
             if (allEpisodesImported)
             {

@@ -138,7 +138,14 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     trackedDownload.Indexer = grabbedEvent?.Data?.GetValueOrDefault("indexer");
                     trackedDownload.Added = grabbedEvent?.Date;
 
-                    if (parsedEpisodeInfo == null ||
+                    if (grabbedEvent != null && grabbedEvent.IsBundleSelectionGrab())
+                    {
+                        // Bundle fast-start: only the selected files are downloaded, so the release title (e.g. 1-220) is
+                        // not what the download contains. Use the episodes recorded when the bundle was grabbed.
+                        trackedDownload.IsBundleSelection = true;
+                        trackedDownload.RemoteEpisode = MapBundleSelection(parsedEpisodeInfo, historyItems);
+                    }
+                    else if (parsedEpisodeInfo == null ||
                         trackedDownload.RemoteEpisode?.Series == null ||
                         trackedDownload.RemoteEpisode.Episodes.Empty())
                     {
@@ -240,9 +247,39 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             }
         }
 
+        private RemoteEpisode MapBundleSelection(ParsedEpisodeInfo parsedEpisodeInfo, List<EpisodeHistory> historyItems)
+        {
+            var grabbedHistory = historyItems.Where(h => h.EventType == EpisodeHistoryEventType.Grabbed).ToList();
+            var latestGrab = grabbedHistory.MaxBy(h => h.Date);
+
+            parsedEpisodeInfo ??= Parser.Parser.ParseTitle(latestGrab.SourceTitle) ?? new ParsedEpisodeInfo
+            {
+                ReleaseTitle = latestGrab.SourceTitle,
+                Quality = latestGrab.Quality,
+                Languages = latestGrab.Languages
+            };
+
+            return _parsingService.Map(parsedEpisodeInfo,
+                latestGrab.SeriesId,
+                grabbedHistory.Select(h => h.EpisodeId).Distinct());
+        }
+
         private void UpdateCachedItem(TrackedDownload trackedDownload)
         {
             var parsedEpisodeInfo = Parser.Parser.ParseTitle(trackedDownload.DownloadItem.Title);
+
+            if (trackedDownload.IsBundleSelection)
+            {
+                var historyItems = _historyService.FindByDownloadId(trackedDownload.DownloadItem.DownloadId);
+
+                if (historyItems.Any(h => h.IsBundleSelectionGrab()))
+                {
+                    trackedDownload.RemoteEpisode = MapBundleSelection(parsedEpisodeInfo, historyItems);
+                    _aggregationService.Augment(trackedDownload.RemoteEpisode);
+
+                    return;
+                }
+            }
 
             trackedDownload.RemoteEpisode = parsedEpisodeInfo == null ? null : _parsingService.Map(parsedEpisodeInfo, 0, 0, null);
 

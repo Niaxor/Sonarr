@@ -19,6 +19,9 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         public bool IsTrackable { get; set; }
         public bool HasNotifiedManualInteractionRequired { get; set; }
 
+        // Bundle fast-start: only some files of a bundle were selected, the episodes come from the grab history
+        public bool IsBundleSelection { get; set; }
+
         public TrackedDownload()
         {
             StatusMessages = Array.Empty<TrackedDownloadStatusMessage>();
