@@ -126,6 +126,51 @@ namespace NzbDrone.Core.Test.Download.Bundles
         }
 
         [Test]
+        public async Task should_prioritise_first_two_requested_episodes_and_download_sequentially()
+        {
+            GivenAnimeTimeBundle();
+
+            await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            _grabbed.BundleSelection.PriorityFilePaths.Should().Equal(
+                "Episodes/[Anime Time] Naruto - 001 [BD][1080p].mkv",
+                "Episodes/[Anime Time] Naruto - 002 [BD][1080p].mkv");
+            _grabbed.BundleSelection.SequentialDownload.Should().BeTrue();
+        }
+
+        [Test]
+        public async Task should_prioritise_first_requested_episodes_of_a_later_season()
+        {
+            var season2 = _episodes.Where(e => e.SeasonNumber == 2).ToList();
+            GivenRelease("[Anime Time] Naruto Complete (001-220 + Movies) [BD] [Dual Audio][1080p]", season2.ToList(), _episodes.Where(e => e.SeasonNumber > 0).ToList());
+
+            await Subject.SearchAndGrab(_series, season2, true, false);
+
+            _grabbed.BundleSelection.PriorityFilePaths.Should().Equal(
+                "Episodes/[Anime Time] Naruto - 036 [BD][1080p].mkv",
+                "Episodes/[Anime Time] Naruto - 037 [BD][1080p].mkv");
+        }
+
+        [Test]
+        public async Task should_not_download_sequentially_when_disabled_by_environment_variable()
+        {
+            GivenAnimeTimeBundle();
+
+            try
+            {
+                Environment.SetEnvironmentVariable(BundleFastStartService.SequentialEnvironmentVariable, "false");
+
+                await Subject.SearchAndGrab(_series, _season1, true, false);
+
+                _grabbed.BundleSelection.SequentialDownload.Should().BeFalse();
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(BundleFastStartService.SequentialEnvironmentVariable, null);
+            }
+        }
+
+        [Test]
         public async Task should_only_search_for_requested_missing_aired_episodes()
         {
             GivenAnimeTimeBundle();

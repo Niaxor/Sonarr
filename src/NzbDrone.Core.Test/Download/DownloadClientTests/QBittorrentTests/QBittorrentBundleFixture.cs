@@ -104,7 +104,7 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
 
             var proxy = Mocker.GetMock<IQBittorrentProxy>();
 
-            proxy.Verify(v => v.AddTorrentFromFileStopped(It.IsAny<string>(), _torrent, It.IsAny<TorrentSeedConfiguration>(), It.IsAny<QBittorrentSettings>()), Times.Once());
+            proxy.Verify(v => v.AddTorrentFromFileStopped(It.IsAny<string>(), _torrent, It.IsAny<TorrentSeedConfiguration>(), It.IsAny<bool>(), It.IsAny<QBittorrentSettings>()), Times.Once());
             proxy.Verify(v => v.AddTorrentFromFile(It.IsAny<string>(), It.IsAny<byte[]>(), It.IsAny<TorrentSeedConfiguration>(), It.IsAny<QBittorrentSettings>()), Times.Never());
             proxy.Verify(v => v.SetFilePriority(Hash.ToLower(), It.Is<IEnumerable<int>>(ids => ids.SequenceEqual(new[] { 2, 3, 4, 5 })), 0, It.IsAny<QBittorrentSettings>()), Times.Once());
             proxy.Verify(v => v.StartTorrent(Hash.ToLower(), It.IsAny<QBittorrentSettings>()), Times.Once());
@@ -158,6 +158,72 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
 
             selectedCount.Should().Be(2);
             unselected.Should().Equal(2, 3, 4, 5);
+        }
+
+        [Test]
+        public async Task should_give_first_requested_episodes_maximal_priority_and_download_sequentially()
+        {
+            _selection.PriorityFilePaths = new List<string> { "Episodes/Naruto - 001.mkv", "Episodes/Naruto - 002.mkv" };
+            _selection.SequentialDownload = true;
+
+            var calls = new List<string>();
+            var proxy = Mocker.GetMock<IQBittorrentProxy>();
+
+            proxy.Setup(v => v.SetFilePriority(It.IsAny<string>(), It.IsAny<IEnumerable<int>>(), It.IsAny<int>(), It.IsAny<QBittorrentSettings>()))
+                .Callback<string, IEnumerable<int>, int, QBittorrentSettings>((h, ids, prio, s) => calls.Add($"prio {prio}: {string.Join(",", ids)}"));
+            proxy.Setup(v => v.StartTorrent(It.IsAny<string>(), It.IsAny<QBittorrentSettings>())).Callback(() => calls.Add("start"));
+
+            await Subject.Download(BundleRemoteEpisode(), CreateIndexer());
+
+            proxy.Verify(v => v.AddTorrentFromFileStopped(It.IsAny<string>(), _torrent, It.IsAny<TorrentSeedConfiguration>(), true, It.IsAny<QBittorrentSettings>()), Times.Once());
+            calls.Should().Equal("prio 0: 2,3,4,5", "prio 7: 0,1", "start");
+        }
+
+        [Test]
+        public async Task should_not_request_sequential_download_when_disabled()
+        {
+            _selection.SequentialDownload = false;
+
+            await Subject.Download(BundleRemoteEpisode(), CreateIndexer());
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Verify(v => v.AddTorrentFromFileStopped(It.IsAny<string>(), _torrent, It.IsAny<TorrentSeedConfiguration>(), false, It.IsAny<QBittorrentSettings>()), Times.Once());
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Verify(v => v.SetFilePriority(It.IsAny<string>(), It.IsAny<IEnumerable<int>>(), 7, It.IsAny<QBittorrentSettings>()), Times.Never());
+        }
+
+        [Test]
+        public void should_report_per_file_progress_with_local_paths()
+        {
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Setup(s => s.GetTorrents(It.IsAny<QBittorrentSettings>()))
+                .Returns(new List<QBittorrentTorrent>
+                {
+                    new QBittorrentTorrent { Hash = Hash.ToLower(), Name = "[Anime Time] Naruto Complete", SavePath = "/downloads", ContentPath = "/downloads/[Anime Time] Naruto Complete", State = "downloading" }
+                });
+
+            _clientFiles[0].Progress = 1;
+            _clientFiles[1].Progress = 0.999;
+            _clientFiles[2].Progress = 1;
+            _clientFiles[2].Priority = 0;
+
+            var item = new DownloadClientItem { DownloadId = Hash, Title = "[Anime Time] Naruto Complete" };
+
+            var files = Subject.GetBundleFileProgress(item);
+
+            files.Should().HaveCount(6);
+            files[0].LocalPath.FullPath.Should().Be("/downloads/[Anime Time] Naruto Complete/Episodes/Naruto - 001.mkv");
+            files[0].IsComplete.Should().BeTrue();
+            files[1].IsComplete.Should().BeFalse("99.9% is not complete");
+            files[2].IsComplete.Should().BeFalse("unselected files are never complete for import");
+        }
+
+        [TestCase("/downloads/Root", "Root/Episodes/Naruto - 001.mkv", 3, "/downloads/Root/Episodes/Naruto - 001.mkv")]
+        [TestCase("/downloads", "Episodes/Naruto - 001.mkv", 3, "/downloads/Episodes/Naruto - 001.mkv")]
+        [TestCase("/downloads/Naruto - 001.mkv", "Naruto - 001.mkv", 1, "/downloads/Naruto - 001.mkv")]
+        public void should_resolve_remote_file_path(string contentPath, string name, int fileCount, string expected)
+        {
+            QBittorrent.GetRemoteFilePath(contentPath, name, fileCount).FullPath.Should().Be(expected);
         }
 
         [Test]

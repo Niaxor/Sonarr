@@ -41,6 +41,10 @@ namespace NzbDrone.Core.Download.Bundles
     public class BundleFastStartService : IBundleFastStartService
     {
         public const string DisableEnvironmentVariable = "SONARR_BUNDLE_FAST_START";
+        public const string SequentialEnvironmentVariable = "SONARR_BUNDLE_SEQUENTIAL";
+
+        // Number of first requested episodes whose files get maximal priority
+        public const int PriorityEpisodeCount = 2;
 
         private readonly ISearchForReleases _releaseSearchService;
         private readonly IPrioritizeDownloadDecision _prioritizeDownloadDecision;
@@ -284,9 +288,31 @@ namespace NzbDrone.Core.Download.Bundles
             remoteEpisode.Episodes = seriesEpisodes.Where(e => selectedIds.Contains(e.Id)).ToList();
             remoteEpisode.BundleSelection = selection;
 
+            SetDownloadOrder(selection, remoteEpisode.Episodes);
+
             _logger.Info("Bundle fast-start: '{0}' {1}", remoteEpisode.Release.Title, selection.Reason);
 
             return true;
+        }
+
+        public static void SetDownloadOrder(BundleFileSelection selection, List<Episode> selectedEpisodes)
+        {
+            var firstIds = selectedEpisodes
+                .OrderBy(e => e.SeasonNumber)
+                .ThenBy(e => e.EpisodeNumber)
+                .Take(PriorityEpisodeCount)
+                .Select(e => e.Id)
+                .ToHashSet();
+
+            selection.PriorityFilePaths = selection.SelectedFiles
+                .Where(f => f.EpisodeIds.Any(firstIds.Contains))
+                .Select(f => f.Path)
+                .ToList();
+
+            var sequential = Environment.GetEnvironmentVariable(SequentialEnvironmentVariable);
+
+            selection.SequentialDownload = sequential.IsNullOrWhiteSpace() ||
+                                           !(sequential.Equals("false", StringComparison.OrdinalIgnoreCase) || sequential == "0" || sequential.Equals("off", StringComparison.OrdinalIgnoreCase));
         }
 
         private async Task<byte[]> FetchTorrentFile(RemoteEpisode remoteEpisode)

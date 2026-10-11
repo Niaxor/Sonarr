@@ -65,5 +65,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         public long Size { get; set; }
 
         public int Priority { get; set; } // 0 = do not download, 1 = normal, 6 = high, 7 = maximal
+
+        public double Progress { get; set; } // File progress (percentage/100)
     }
 }

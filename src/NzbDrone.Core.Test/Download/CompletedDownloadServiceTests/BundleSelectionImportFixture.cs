@@ -66,6 +66,37 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
                 .Returns(new List<Episode>());
         }
 
+        private void GivenEverythingImportedWhileDownloading()
+        {
+            var history = Mocker.Resolve<IHistoryService>().FindByDownloadId(DownloadId).ToList();
+
+            history.AddRange(_selectedEpisodes.Select(e => new EpisodeHistory
+            {
+                DownloadId = DownloadId,
+                EventType = EpisodeHistoryEventType.DownloadFolderImported,
+                SeriesId = 1,
+                EpisodeId = e.Id,
+                SourceTitle = Title,
+                Date = DateTime.UtcNow.AddMinutes(1)
+            }));
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId(DownloadId))
+                .Returns(history);
+
+            // The final import finds every file already imported
+            var results = _selectedEpisodes.Select(e => new ImportResult(new ImportDecision(new LocalEpisode
+            {
+                Path = $@"C:\DropFolder\Naruto\Episodes\Naruto - {e.AbsoluteEpisodeNumber:000}.mkv".AsOsAgnostic(),
+                Episodes = new List<Episode> { e }
+            }, new ImportRejection(ImportRejectionReason.EpisodeAlreadyImported, "Episode file already imported")), "Episode file already imported"))
+            .ToList();
+
+            Mocker.GetMock<IDownloadedEpisodesImportService>()
+                .Setup(v => v.ProcessPath(It.IsAny<string>(), It.IsAny<ImportMode>(), It.IsAny<Series>(), It.IsAny<DownloadClientItem>()))
+                .Returns(results);
+        }
+
         private void GivenGrabHistory(bool bundleSelection)
         {
             var history = _selectedEpisodes.Select(e =>
@@ -157,6 +188,47 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
             _selectedEpisodes = _allEpisodes;
             GivenGrabHistory(true);
             GivenImportedEpisodes(_allEpisodes);
+
+            Subject.Import(_trackedDownload);
+
+            _trackedDownload.State.Should().Be(TrackedDownloadState.Imported);
+        }
+
+        [Test]
+        public void completion_should_be_imported_when_every_file_was_imported_while_downloading()
+        {
+            GivenGrabHistory(true);
+            GivenEverythingImportedWhileDownloading();
+
+            Subject.Import(_trackedDownload);
+
+            _trackedDownload.State.Should().Be(TrackedDownloadState.Imported);
+
+            Mocker.GetMock<IEventAggregator>()
+                .Verify(v => v.PublishEvent(It.IsAny<DownloadCompletedEvent>()), Times.Once());
+            Mocker.GetMock<IEventAggregator>()
+                .Verify(v => v.PublishEvent(It.IsAny<ManualInteractionRequiredEvent>()), Times.Never());
+        }
+
+        [Test]
+        public void completion_should_import_the_rest_when_some_files_were_imported_while_downloading()
+        {
+            GivenGrabHistory(true);
+
+            var history = Mocker.Resolve<IHistoryService>().FindByDownloadId(DownloadId).ToList();
+            history.AddRange(_selectedEpisodes.Take(20).Select(e => new EpisodeHistory
+            {
+                DownloadId = DownloadId,
+                EventType = EpisodeHistoryEventType.DownloadFolderImported,
+                EpisodeId = e.Id,
+                Date = DateTime.UtcNow.AddMinutes(1)
+            }));
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId(DownloadId))
+                .Returns(history);
+
+            GivenImportedEpisodes(_selectedEpisodes.Skip(20));
 
             Subject.Import(_trackedDownload);
 

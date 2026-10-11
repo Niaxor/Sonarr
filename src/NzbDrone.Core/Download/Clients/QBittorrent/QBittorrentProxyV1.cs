@@ -264,7 +264,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
         }
 
-        public void AddTorrentFromFileStopped(string fileName, byte[] fileContent, TorrentSeedConfiguration seedConfiguration, QBittorrentSettings settings)
+        public void AddTorrentFromFileStopped(string fileName, byte[] fileContent, TorrentSeedConfiguration seedConfiguration, bool sequentialDownload, QBittorrentSettings settings)
         {
             throw new DownloadClientException("Downloading part of a bundle requires qBittorrent 4.1 or newer (WebUI API v2)");
         }

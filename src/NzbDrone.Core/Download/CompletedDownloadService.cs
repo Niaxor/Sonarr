@@ -217,6 +217,10 @@ namespace NzbDrone.Core.Download
                                                       .Select(e => e.Id)
                                                       .ToHashSet();
 
+                // Files may already have been imported one by one while the torrent was still downloading
+                importedEpisodeIds.UnionWith(historyItems.Where(h => h.EventType == EpisodeHistoryEventType.DownloadFolderImported)
+                                                         .Select(h => h.EpisodeId));
+
                 allEpisodesImported = expectedEpisodeIds.All(importedEpisodeIds.Contains);
             }
             else

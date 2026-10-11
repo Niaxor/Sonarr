@@ -241,13 +241,19 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         }
 
         // Bundle fast-start. API: https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0)
-        public void AddTorrentFromFileStopped(string fileName, byte[] fileContent, TorrentSeedConfiguration seedConfiguration, QBittorrentSettings settings)
+        public void AddTorrentFromFileStopped(string fileName, byte[] fileContent, TorrentSeedConfiguration seedConfiguration, bool sequentialDownload, QBittorrentSettings settings)
         {
             var request = BuildRequest(settings).Resource("/api/v2/torrents/add")
                                                 .Post()
                                                 .AddFormUpload("torrents", fileName, fileContent);
 
             AddTorrentDownloadFormParameters(request, settings, true);
+
+            // torrents/add "sequentialDownload": download pieces in order so episodes finish (and import) in order
+            if (sequentialDownload && !settings.SequentialOrder)
+            {
+                request.AddFormParameter("sequentialDownload", true);
+            }
 
             if (seedConfiguration != null)
             {

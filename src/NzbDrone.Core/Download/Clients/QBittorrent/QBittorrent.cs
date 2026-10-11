@@ -19,7 +19,7 @@ using NzbDrone.Core.Validation;
 
 namespace NzbDrone.Core.Download.Clients.QBittorrent
 {
-    public class QBittorrent : TorrentClientBase<QBittorrentSettings>
+    public class QBittorrent : TorrentClientBase<QBittorrentSettings>, IProvideBundleFileProgress
     {
         private readonly IQBittorrentProxySelector _proxySelector;
         private readonly ICached<SeedingTimeCacheEntry> _seedingTimeCache;
@@ -208,7 +208,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             var lowerHash = hash.ToLower();
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-            Proxy.AddTorrentFromFileStopped(filename, fileContent, addHasSetShareLimits ? remoteEpisode.SeedConfiguration : null, Settings);
+            Proxy.AddTorrentFromFileStopped(filename, fileContent, addHasSetShareLimits ? remoteEpisode.SeedConfiguration : null, selection.SequentialDownload, Settings);
 
             if (!WaitForTorrent(hash, 50))
             {
@@ -233,6 +233,14 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
                 if (unselected.Any())
                 {
                     Proxy.SetFilePriority(lowerHash, unselected, 0, Settings);
+                }
+
+                // The first requested episodes download first: maximal priority (7) for their files
+                var priorityIndexes = GetFileIndexes(selection.PriorityFilePaths, clientFiles);
+
+                if (priorityIndexes.Any())
+                {
+                    Proxy.SetFilePriority(lowerHash, priorityIndexes, 7, Settings);
                 }
 
                 _logger.Info("Bundle '{0}': added stopped and selected {1} of {2} files in {3} ms", remoteEpisode.Release.Title, selectedCount, clientFiles.Count, stopwatch.ElapsedMilliseconds);
@@ -303,6 +311,75 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
 
             throw new DownloadClientException("qBittorrent did not return the file list of the bundle torrent");
+        }
+
+        public List<BundleFileProgress> GetBundleFileProgress(DownloadClientItem item)
+        {
+            var hash = item.DownloadId.ToLower();
+            var torrent = Proxy.GetTorrents(Settings).FirstOrDefault(t => t.Hash.Equals(hash, StringComparison.OrdinalIgnoreCase));
+
+            if (torrent == null || torrent.ContentPath.IsNullOrWhiteSpace())
+            {
+                return new List<BundleFileProgress>();
+            }
+
+            var files = Proxy.GetTorrentFiles(hash, Settings);
+
+            return files.Select((f, i) => new BundleFileProgress
+                {
+                    Index = f.Index ?? i,
+                    Name = f.Name,
+                    Size = f.Size,
+                    Progress = f.Progress,
+                    Priority = f.Priority,
+                    LocalPath = _remotePathMappingService.RemapRemoteToLocal(Settings.Host, GetRemoteFilePath(torrent.ContentPath, f.Name, files.Count))
+                })
+                .ToList();
+        }
+
+        // content_path is the torrent's current root folder (or the file itself for single-file torrents); file names
+        // include the root folder when the torrent has one (content layout "Original"/"Subfolder")
+        public static OsPath GetRemoteFilePath(string contentPath, string fileName, int fileCount)
+        {
+            var content = new OsPath(contentPath);
+            var relative = new OsPath(fileName);
+
+            if (fileCount == 1 && content.FileName == relative.FileName)
+            {
+                return content;
+            }
+
+            var firstComponent = relative;
+
+            while (!firstComponent.Directory.IsEmpty)
+            {
+                firstComponent = firstComponent.Directory;
+            }
+
+            if (firstComponent.FileName == content.FileName)
+            {
+                return content.Directory + relative;
+            }
+
+            return content + relative;
+        }
+
+        private static List<int> GetFileIndexes(List<string> paths, List<QBittorrentTorrentFile> clientFiles)
+        {
+            var normalized = paths.Select(p => p.Replace('\\', '/')).ToList();
+            var indexes = new List<int>();
+
+            for (var i = 0; i < clientFiles.Count; i++)
+            {
+                var name = clientFiles[i].Name.Replace('\\', '/');
+
+                if (normalized.Any(p => name.Equals(p, StringComparison.Ordinal) || name.EndsWith("/" + p, StringComparison.Ordinal)))
+                {
+                    indexes.Add(clientFiles[i].Index ?? i);
+                }
+            }
+
+            return indexes;
         }
 
         // Matches qBittorrent file names (which may include the torrent root folder) to the selected torrent paths

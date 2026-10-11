@@ -11,6 +11,7 @@ namespace NzbDrone.Core.Download.Bundles
             Files = new List<BundleTorrentFile>();
             SelectedEpisodeIds = new List<int>();
             MissingRequestedEpisodeIds = new List<int>();
+            PriorityFilePaths = new List<string>();
         }
 
         public byte[] TorrentFile { get; set; }
@@ -21,6 +22,12 @@ namespace NzbDrone.Core.Download.Bundles
 
         // Requested episodes the bundle does not contain, these continue with the normal search
         public List<int> MissingRequestedEpisodeIds { get; set; }
+
+        // Files of the first requested episodes, downloaded with maximal priority so they finish (and import) first
+        public List<string> PriorityFilePaths { get; set; }
+
+        // Download the torrent sequentially so the remaining episodes finish roughly in order
+        public bool SequentialDownload { get; set; }
 
         public bool IsReliable { get; set; }
         public string Reason { get; set; }

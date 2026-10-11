@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using NLog;
 using NzbDrone.Core.Configuration;
+using NzbDrone.Core.Download.Bundles;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Messaging.Events;
@@ -15,6 +16,7 @@ namespace NzbDrone.Core.Download
         private readonly IFailedDownloadService _failedDownloadService;
         private readonly ITrackedDownloadService _trackedDownloadService;
         private readonly IEventAggregator _eventAggregator;
+        private readonly IBundleProgressiveImportService _bundleProgressiveImportService;
         private readonly Logger _logger;
 
         public DownloadProcessingService(IConfigService configService,
@@ -22,6 +24,7 @@ namespace NzbDrone.Core.Download
                                          IFailedDownloadService failedDownloadService,
                                          ITrackedDownloadService trackedDownloadService,
                                          IEventAggregator eventAggregator,
+                                         IBundleProgressiveImportService bundleProgressiveImportService,
                                          Logger logger)
         {
             _configService = configService;
@@ -29,6 +32,7 @@ namespace NzbDrone.Core.Download
             _failedDownloadService = failedDownloadService;
             _trackedDownloadService = trackedDownloadService;
             _eventAggregator = eventAggregator;
+            _bundleProgressiveImportService = bundleProgressiveImportService;
             _logger = logger;
         }
 
@@ -66,6 +70,12 @@ namespace NzbDrone.Core.Download
                     if (trackedDownload.State == TrackedDownloadState.FailedPending)
                     {
                         _failedDownloadService.ProcessFailed(trackedDownload);
+                    }
+
+                    // Bundle fast-start: import finished files of partial-bundle downloads that are still downloading
+                    if (enableCompletedDownloadHandling && trackedDownload.IsBundleSelection && trackedDownload.State == TrackedDownloadState.Downloading)
+                    {
+                        _bundleProgressiveImportService.ImportCompletedFiles(trackedDownload);
                     }
                 }
                 catch (Exception e)
