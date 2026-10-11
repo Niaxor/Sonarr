@@ -153,12 +153,14 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
                 Series = _anime,
                 SceneTitles = new List<string> { "Naruto" },
                 Episodes = _animeEpisodes.Take(35).ToList(),
-                EpisodeQueryTitles = new[] { "Naruto+Complete", "Naruto+Batch", "Naruto+001" }
+                EpisodeQueryTitles = new[] { "Naruto+Complete", "Naruto+Batch", "Naruto+001" },
+                BundleRequestedEpisodes = _animeEpisodes.Take(35).ToList()
             };
 
             var urls = generator.GetSearchRequests(criteria).GetAllTiers().Select(p => p.First().Url.FullUri).ToList();
 
             urls.Should().HaveCount(3);
+            generator.GetSearchRequests(criteria).GetAllTiers().Should().OnlyContain(p => p.Count() == 1, "fast-start queries only fetch the first page");
             urls.Should().OnlyContain(u => u.Contains("t=search"));
             urls[0].Should().Contain("q=Naruto+Complete");
             urls[1].Should().Contain("q=Naruto+Batch");

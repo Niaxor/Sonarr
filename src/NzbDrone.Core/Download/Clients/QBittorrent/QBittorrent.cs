@@ -206,6 +206,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             var moveToTop = (isRecentEpisode && Settings.RecentTvPriority == (int)QBittorrentPriority.First) || (!isRecentEpisode && Settings.OlderTvPriority == (int)QBittorrentPriority.First);
             var initialState = (QBittorrentState)Settings.InitialState;
             var lowerHash = hash.ToLower();
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             Proxy.AddTorrentFromFileStopped(filename, fileContent, addHasSetShareLimits ? remoteEpisode.SeedConfiguration : null, Settings);
 
@@ -234,7 +235,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
                     Proxy.SetFilePriority(lowerHash, unselected, 0, Settings);
                 }
 
-                _logger.Debug("Bundle '{0}': downloading {1} of {2} files", remoteEpisode.Release.Title, selectedCount, clientFiles.Count);
+                _logger.Info("Bundle '{0}': added stopped and selected {1} of {2} files in {3} ms", remoteEpisode.Release.Title, selectedCount, clientFiles.Count, stopwatch.ElapsedMilliseconds);
             }
             catch (Exception)
             {

@@ -425,14 +425,14 @@ namespace NzbDrone.Core.Indexers.Newznab
 
                 foreach (var queryTitle in queryTitles)
                 {
-                    pageableRequests.Add(GetPagedRequests(MaxPages,
+                    pageableRequests.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         Settings.AnimeCategories,
                         "search",
                         $"&q={NewsnabifyTitle(queryTitle)}+{searchCriteria.AbsoluteEpisodeNumber:00}"));
 
                     if (includeAnimeStandardFormatSearch && SupportsEpisodeSearch)
                     {
-                        pageableRequests.Add(GetPagedRequests(MaxPages,
+                        pageableRequests.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                             Settings.AnimeCategories,
                             "tvsearch",
                             $"&q={NewsnabifyTitle(queryTitle)}&season={NewznabifySeasonNumber(searchCriteria.SeasonNumber)}&ep={searchCriteria.EpisodeNumber}"));
@@ -458,7 +458,7 @@ namespace NzbDrone.Core.Indexers.Newznab
 
                 foreach (var queryTitle in queryTitles)
                 {
-                    pageableRequests.Add(GetPagedRequests(MaxPages,
+                    pageableRequests.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         Settings.AnimeCategories,
                         "tvsearch",
                         $"&q={NewsnabifyTitle(queryTitle)}&season={NewznabifySeasonNumber(searchCriteria.SeasonNumber)}"));
@@ -479,7 +479,7 @@ namespace NzbDrone.Core.Indexers.Newznab
                     var query = queryTitle.Replace('+', ' ');
                     query = System.Web.HttpUtility.UrlEncode(query);
 
-                    pageableRequests.Add(GetPagedRequests(MaxPages,
+                    pageableRequests.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         Settings.Categories.Concat(Settings.AnimeCategories),
                         "search",
                         $"&q={query}"));
@@ -487,6 +487,14 @@ namespace NzbDrone.Core.Indexers.Newznab
             }
 
             return pageableRequests;
+        }
+
+        // Bundle fast-start: only the first page. Extra pages cost another rate-limited request per query, and Prowlarr's
+        // Nyaa definition returns more items than the requested limit on the first page, which made Sonarr ask for an
+        // empty second page every time.
+        private int GetMaxPages(SearchCriteriaBase searchCriteria)
+        {
+            return searchCriteria.IsBundleFastStart ? 1 : MaxPages;
         }
 
         private void AddTvIdPageableRequests(IndexerPageableRequestChain chain, IEnumerable<int> categories, SearchCriteriaBase searchCriteria, string parameters)
@@ -526,41 +534,41 @@ namespace NzbDrone.Core.Indexers.Newznab
                     ids += "&tmdbid=" + searchCriteria.Series.TmdbId;
                 }
 
-                chain.Add(GetPagedRequests(MaxPages, categories, "tvsearch", ids + parameters));
+                chain.Add(GetPagedRequests(GetMaxPages(searchCriteria), categories, "tvsearch", ids + parameters));
             }
             else
             {
                 if (includeTvdbSearch)
                 {
-                    chain.Add(GetPagedRequests(MaxPages,
+                    chain.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         categories,
                         "tvsearch",
                         $"&tvdbid={searchCriteria.Series.TvdbId}{parameters}"));
                 }
                 else if (includeImdbSearch)
                 {
-                    chain.Add(GetPagedRequests(MaxPages,
+                    chain.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         categories,
                         "tvsearch",
                         $"&imdbid={searchCriteria.Series.ImdbId}{parameters}"));
                 }
                 else if (includeTvRageSearch)
                 {
-                    chain.Add(GetPagedRequests(MaxPages,
+                    chain.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         categories,
                         "tvsearch",
                         $"&rid={searchCriteria.Series.TvRageId}{parameters}"));
                 }
                 else if (includeTvMazeSearch)
                 {
-                    chain.Add(GetPagedRequests(MaxPages,
+                    chain.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         categories,
                         "tvsearch",
                         $"&tvmazeid={searchCriteria.Series.TvMazeId}{parameters}"));
                 }
                 else if (includeTmdbSearch)
                 {
-                    chain.Add(GetPagedRequests(MaxPages,
+                    chain.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         categories,
                         "tvsearch",
                         $"&tmdbid={searchCriteria.Series.TmdbId}{parameters}"));
@@ -574,7 +582,7 @@ namespace NzbDrone.Core.Indexers.Newznab
             {
                 foreach (var searchTerm in searchCriteria.SceneTitles)
                 {
-                    chain.Add(GetPagedRequests(MaxPages,
+                    chain.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         Settings.Categories,
                         "tvsearch",
                         $"&title={Uri.EscapeDataString(searchTerm)}{parameters}"));
@@ -585,7 +593,7 @@ namespace NzbDrone.Core.Indexers.Newznab
                 var queryTitles = TvTextSearchEngine == "raw" ? searchCriteria.AllSceneTitles : searchCriteria.CleanSceneTitles;
                 foreach (var queryTitle in queryTitles)
                 {
-                    chain.Add(GetPagedRequests(MaxPages,
+                    chain.Add(GetPagedRequests(GetMaxPages(searchCriteria),
                         Settings.Categories,
                         "tvsearch",
                         $"&q={NewsnabifyTitle(queryTitle)}{parameters}"));

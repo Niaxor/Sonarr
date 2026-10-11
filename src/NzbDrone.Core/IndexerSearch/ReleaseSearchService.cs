@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
@@ -565,11 +566,14 @@ namespace NzbDrone.Core.IndexerSearch
 
             _logger.ProgressInfo("Searching indexers for {0}. {1} active indexers", criteriaBase, indexers.Count);
 
+            var stopwatch = Stopwatch.StartNew();
+
             var tasks = indexers.Select(indexer => DispatchIndexer(searchAction, indexer, criteriaBase));
 
             var batch = await Task.WhenAll(tasks);
 
             var reports = batch.SelectMany(x => x).ToList();
+            var fetchTime = stopwatch.ElapsedMilliseconds;
 
             _logger.ProgressDebug("Total of {0} reports were found for {1} from {2} indexers", reports.Count, criteriaBase, indexers.Count);
 
@@ -583,14 +587,37 @@ namespace NzbDrone.Core.IndexerSearch
                 _episodeService.UpdateLastSearchTime(criteriaBase.Episodes);
             }
 
-            return _makeDownloadDecision.GetSearchDecision(reports, criteriaBase).ToList();
+            stopwatch.Restart();
+
+            var decisions = _makeDownloadDecision.GetSearchDecision(reports, criteriaBase).ToList();
+
+            // Bundle fast-start: report where the time goes at Info level, other searches at Debug
+            _logger.Log(criteriaBase.IsBundleFastStart ? LogLevel.Info : LogLevel.Debug,
+                "Search timing for {0}: indexers {1} ms, decisions for {2} releases {3} ms",
+                criteriaBase,
+                fetchTime,
+                reports.Count,
+                stopwatch.ElapsedMilliseconds);
+
+            return decisions;
         }
 
         private async Task<IList<ReleaseInfo>> DispatchIndexer(Func<IIndexer, Task<IList<ReleaseInfo>>> searchAction, IIndexer indexer, SearchCriteriaBase criteriaBase)
         {
+            var stopwatch = Stopwatch.StartNew();
+
             try
             {
-                return await searchAction(indexer);
+                var releases = await searchAction(indexer);
+
+                _logger.Log(criteriaBase.IsBundleFastStart ? LogLevel.Info : LogLevel.Debug,
+                    "Search timing for {0}: {1} returned {2} releases in {3} ms",
+                    criteriaBase,
+                    indexer.Definition.Name,
+                    releases.Count,
+                    stopwatch.ElapsedMilliseconds);
+
+                return releases;
             }
             catch (Exception ex)
             {
