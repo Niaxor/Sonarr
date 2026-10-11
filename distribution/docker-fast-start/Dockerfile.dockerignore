@@ -1,0 +1,8 @@
+# Build context is the repository root; only send what the backend build needs
+*
+!global.json
+!.editorconfig
+!Logo/
+!src/
+src/**/bin/
+src/**/obj/
