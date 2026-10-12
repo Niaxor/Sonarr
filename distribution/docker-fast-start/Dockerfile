@@ -2,7 +2,7 @@
 #
 # Sonarr with bundle fast-start, built from this fork.
 #
-# Only Sonarr.Core.dll and Sonarr.Common.dll differ from stock Sonarr 4.0.20.3014, so they are built here and laid over the
+# Only Sonarr.Core.dll, Sonarr.Common.dll and Sonarr.Api.V3.dll differ from stock Sonarr 4.0.20.3014, so they are built here and laid over the
 # official linuxserver.io image of exactly the same version (frontend, runtime and every other assembly come from it).
 #
 # Build from the repository root:
@@ -23,9 +23,9 @@ COPY src ./src
 # Same version stamping as build.sh, so the assembly version matches the base image (4.0.20.3014)
 RUN sed -i "s/<AssemblyVersion>[0-9.*]\+<\/AssemblyVersion>/<AssemblyVersion>${SONARR_VERSION}<\/AssemblyVersion>/g" src/Directory.Build.props && \
     sed -i "s/<AssemblyConfiguration>[\$()A-Za-z-]\+<\/AssemblyConfiguration>/<AssemblyConfiguration>main<\/AssemblyConfiguration>/g" src/Directory.Build.props && \
-    dotnet build src/NzbDrone.Core/Sonarr.Core.csproj -c Release -p:Platform=Posix -p:SolutionDir=/src/src/ && \
+    dotnet build src/Sonarr.Api.V3/Sonarr.Api.V3.csproj -c Release -p:Platform=Posix -p:SolutionDir=/src/src/ && \
     mkdir /out && \
-    cp _output/net6.0/Sonarr.Core.dll _output/net6.0/Sonarr.Core.pdb _output/net6.0/Sonarr.Common.dll _output/net6.0/Sonarr.Common.pdb /out/
+    cp _output/net6.0/Sonarr.Core.dll _output/net6.0/Sonarr.Core.pdb _output/net6.0/Sonarr.Common.dll _output/net6.0/Sonarr.Common.pdb _output/net6.0/Sonarr.Api.V3.dll _output/net6.0/Sonarr.Api.V3.pdb /out/
 
 FROM ${BASE_IMAGE}
 
