@@ -152,6 +152,24 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
         }
 
         [Test]
+        public async Task tiered_search_runs_every_tier_then_every_episode_and_reports_each_batch()
+        {
+            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
+            var batches = 0;
+
+            await Subject.TieredSearch(_anime, season1, false, decisions =>
+            {
+                batches++;
+                return Task.CompletedTask;
+            });
+
+            // Bundle tier, season tier, episode 1, then episodes 2-35: nothing stops early
+            batches.Should().Be(3 + 34);
+            _criteria.OfType<AnimeEpisodeSearchCriteria>().Select(c => c.AbsoluteEpisodeNumber).Should().BeEquivalentTo(Enumerable.Range(1, 35));
+            _criteria.Should().OnlyContain(c => c.IsBundleFastStart && c.BundleRequestedEpisodes.Count == 35);
+        }
+
+        [Test]
         public async Task should_search_bundle_wordings_for_every_title_variant()
         {
             Mocker.GetMock<ISceneMappingService>()

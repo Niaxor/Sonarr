@@ -8,6 +8,8 @@ using NzbDrone.Core.Configuration;
 using NzbDrone.Core.CustomFormats;
 using NzbDrone.Core.DecisionEngine.Specifications;
 using NzbDrone.Core.Download.TrackedDownloads;
+using NzbDrone.Core.History;
+using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Core.Languages;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
@@ -275,6 +277,66 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
                                                       .Build();
 
             GivenQueue(new List<RemoteEpisode> { remoteEpisode });
+            Subject.IsSatisfiedBy(_remoteEpisode, null).Accepted.Should().BeFalse();
+        }
+
+        private void GivenBetterQueueItem(string downloadId, bool fastStart)
+        {
+            _series.QualityProfile.Value.Cutoff = Quality.Bluray1080p.Id;
+
+            var remoteEpisode = Builder<RemoteEpisode>.CreateNew()
+                                                      .With(r => r.Series = _series)
+                                                      .With(r => r.Episodes = new List<Episode> { _episode })
+                                                      .With(r => r.ParsedEpisodeInfo = new ParsedEpisodeInfo
+                                                                                       {
+                                                                                           Quality = new QualityModel(Quality.HDTV720p),
+                                                                                           Languages = new List<Language> { Language.English }
+                                                                                       })
+                                                      .With(r => r.Release = _releaseInfo)
+                                                      .With(r => r.CustomFormats = new List<CustomFormat>())
+                                                      .Build();
+
+            Mocker.GetMock<IQueueService>()
+                .Setup(s => s.GetQueue())
+                .Returns(new List<Queue.Queue> { new Queue.Queue { RemoteEpisode = remoteEpisode, DownloadId = downloadId, TrackedDownloadState = TrackedDownloadState.Downloading } });
+
+            var grab = new EpisodeHistory { DownloadId = downloadId, EventType = EpisodeHistoryEventType.Grabbed };
+
+            if (fastStart)
+            {
+                grab.Data[NzbDrone.Core.Download.Bundles.FastStartSourceService.FastStartKey] = "true";
+            }
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId(downloadId))
+                .Returns(new List<EpisodeHistory> { grab });
+        }
+
+        [Test]
+        public void fast_start_search_should_not_be_blocked_by_a_fast_start_download_in_queue()
+        {
+            GivenBetterQueueItem("FASTHASH", true);
+
+            var criteria = new SingleEpisodeSearchCriteria { Series = _series, Episodes = new List<Episode> { _episode }, BundleRequestedEpisodes = new List<Episode> { _episode } };
+
+            Subject.IsSatisfiedBy(_remoteEpisode, criteria).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public void fast_start_search_should_still_be_blocked_by_other_downloads_in_queue()
+        {
+            GivenBetterQueueItem("OTHERHASH", false);
+
+            var criteria = new SingleEpisodeSearchCriteria { Series = _series, Episodes = new List<Episode> { _episode }, BundleRequestedEpisodes = new List<Episode> { _episode } };
+
+            Subject.IsSatisfiedBy(_remoteEpisode, criteria).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void normal_search_should_still_be_blocked_by_a_fast_start_download_in_queue()
+        {
+            GivenBetterQueueItem("FASTHASH", true);
+
             Subject.IsSatisfiedBy(_remoteEpisode, null).Accepted.Should().BeFalse();
         }
 

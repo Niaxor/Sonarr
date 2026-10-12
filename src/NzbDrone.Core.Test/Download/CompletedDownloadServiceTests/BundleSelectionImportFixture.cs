@@ -236,6 +236,38 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
         }
 
         [Test]
+        public void superseded_episodes_should_not_block_completion()
+        {
+            // Episode 35 moved to a better torrent and its file was switched off here
+            GivenGrabHistory(true);
+            GivenImportedEpisodes(_selectedEpisodes.Take(34));
+
+            Mocker.GetMock<NzbDrone.Core.Download.Bundles.IFastStartSourceService>()
+                .Setup(s => s.GetSupersededEpisodeIds(DownloadId))
+                .Returns(new HashSet<int> { 35 });
+
+            Subject.Import(_trackedDownload);
+
+            _trackedDownload.State.Should().Be(TrackedDownloadState.Imported);
+        }
+
+        [Test]
+        public void episodes_that_already_have_a_file_should_not_block_completion()
+        {
+            // Episode 35 was imported from another source first; this torrent's copy was not an upgrade
+            GivenGrabHistory(true);
+            GivenImportedEpisodes(_selectedEpisodes.Take(34));
+
+            Mocker.GetMock<IEpisodeService>()
+                .Setup(s => s.GetEpisodes(It.Is<IEnumerable<int>>(ids => ids.Contains(35))))
+                .Returns(new List<Episode> { new Episode { Id = 35, EpisodeFileId = 9 } });
+
+            Subject.Import(_trackedDownload);
+
+            _trackedDownload.State.Should().Be(TrackedDownloadState.Imported);
+        }
+
+        [Test]
         public void stock_behaviour_without_bundle_selection_blocks_partial_import()
         {
             // Documents the blocker the bundle selection flag fixes: same import, but the grab was not marked as a partial bundle
