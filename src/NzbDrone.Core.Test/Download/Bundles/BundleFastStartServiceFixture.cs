@@ -13,6 +13,9 @@ using NzbDrone.Core.Download.Clients.QBittorrent;
 using NzbDrone.Core.Indexers;
 using NzbDrone.Core.IndexerSearch;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.Profiles.Delay;
+using NzbDrone.Core.Profiles.Qualities;
+using NzbDrone.Core.Qualities;
 using NzbDrone.Core.Test.Framework;
 using NzbDrone.Core.Tv;
 
@@ -58,7 +61,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
                 .Returns(() => Task.FromResult(_decisions));
 
             Mocker.GetMock<IPrioritizeDownloadDecision>()
-                .Setup(s => s.PrioritizeDecisions(It.IsAny<List<DownloadDecision>>()))
+                .Setup(s => s.PrioritizeBundleDecisions(It.IsAny<List<DownloadDecision>>()))
                 .Returns<List<DownloadDecision>>(d => d);
 
             Mocker.GetMock<IHttpClient>()
@@ -181,6 +184,117 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             Mocker.GetMock<ISearchForReleases>()
                 .Verify(v => v.BundleFastStartSearch(_series, It.Is<List<Episode>>(l => l.Count == 34 && l.First().Id == 2), false), Times.Once());
+        }
+
+        private void GivenRealGrading()
+        {
+            _series.QualityProfile = new QualityProfile { Items = Qualities.QualityFixture.GetDefaultQualities() };
+
+            Mocker.GetMock<IDelayProfileService>()
+                .Setup(s => s.BestForTags(It.IsAny<HashSet<int>>()))
+                .Returns(new DelayProfile { PreferredProtocol = DownloadProtocol.Torrent });
+
+            Mocker.GetMock<IQualityDefinitionService>()
+                .Setup(s => s.Get(It.IsAny<Quality>()))
+                .Returns(new QualityDefinition { PreferredSize = null });
+
+            Mocker.SetConstant<IPrioritizeDownloadDecision>(Mocker.Resolve<DownloadDecisionPriorizationService>());
+        }
+
+        private DownloadDecision GivenGradedRelease(string title, List<Episode> episodes, int seeders, List<Episode> bundleEpisodes = null)
+        {
+            var decision = GivenRelease(title, episodes, bundleEpisodes);
+            var release = (TorrentInfo)decision.RemoteEpisode.Release;
+
+            release.Seeders = seeders;
+            release.Peers = seeders;
+            release.Guid = title;
+            release.IndexerPriority = 25;
+
+            return decision;
+        }
+
+        [Test]
+        public async Task healthy_bundle_found_first_should_lose_to_better_graded_season_pack()
+        {
+            GivenRealGrading();
+
+            var all = _episodes.Where(e => e.SeasonNumber > 0).ToList();
+
+            GivenGradedRelease("[Group] Naruto Complete (001-220) [HDTV 1080p]", _season1.ToList(), 94, all);
+            GivenGradedRelease("[Group] Naruto S01 [BD 1080p]", _season1.ToList(), 60);
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.Grabbed.Should().Be(1);
+            _grabbed.Release.Title.Should().Be("[Group] Naruto S01 [BD 1080p]");
+        }
+
+        [Test]
+        public async Task healthy_bundle_found_first_should_lose_to_better_graded_first_episode_release()
+        {
+            GivenRealGrading();
+
+            var all = _episodes.Where(e => e.SeasonNumber > 0).ToList();
+
+            GivenGradedRelease("[Group] Naruto Complete (001-220) [HDTV 1080p]", _season1.ToList(), 94, all);
+            GivenGradedRelease("[Group] Naruto - 001 [BD 1080p]", _season1.Take(1).ToList(), 40);
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            // The best graded release is a single episode: no bundle grab, the normal search takes over
+            result.CoveredEpisodeIds.Should().BeEmpty();
+            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+        }
+
+        [Test]
+        public async Task should_ignore_poorly_seeded_bundle_and_grab_the_well_seeded_one()
+        {
+            // Slime: 3 seeder "Complete" pack ranked first, 94 seeder batch second
+            var all = _episodes.Where(e => e.SeasonNumber > 0).ToList();
+
+            var poor = GivenRelease("[HorribleSubs] Naruto - Complete 001-220 [1080p]", _season1.ToList(), all);
+            ((TorrentInfo)poor.RemoteEpisode.Release).Seeders = 3;
+
+            var healthy = GivenRelease("[Anime Time] Naruto Complete (001-220 + Movies) [BD] [Dual Audio][1080p]", _season1.ToList(), all);
+            ((TorrentInfo)healthy.RemoteEpisode.Release).Seeders = 94;
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.Grabbed.Should().Be(1);
+            _grabbed.Release.Title.Should().StartWith("[Anime Time]");
+        }
+
+        [Test]
+        public async Task should_fall_back_when_the_only_bundle_is_poorly_seeded()
+        {
+            GivenAnimeTimeBundle();
+            ((TorrentInfo)_decisions.Single().RemoteEpisode.Release).Seeders = 4;
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.CoveredEpisodeIds.Should().BeEmpty();
+            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+        }
+
+        [Test]
+        public async Task should_use_configured_minimum_seeders()
+        {
+            GivenAnimeTimeBundle();
+            ((TorrentInfo)_decisions.Single().RemoteEpisode.Release).Seeders = 4;
+
+            try
+            {
+                Environment.SetEnvironmentVariable(BundleSeeders.MinimumEnvironmentVariable, "2");
+
+                var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+                result.Grabbed.Should().Be(1);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(BundleSeeders.MinimumEnvironmentVariable, null);
+            }
         }
 
         [Test]

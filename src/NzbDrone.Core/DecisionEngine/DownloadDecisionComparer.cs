@@ -20,15 +20,47 @@ namespace NzbDrone.Core.DecisionEngine
         public delegate int CompareDelegate(DownloadDecision x, DownloadDecision y);
         public delegate int CompareDelegate<TSubject, TValue>(DownloadDecision x, DownloadDecision y);
 
+        private readonly bool _bundleFastStart;
+
         public DownloadDecisionComparer(IConfigService configService, IDelayProfileService delayProfileService, IQualityDefinitionService qualityDefinitionService)
+            : this(configService, delayProfileService, qualityDefinitionService, false)
+        {
+        }
+
+        public DownloadDecisionComparer(IConfigService configService, IDelayProfileService delayProfileService, IQualityDefinitionService qualityDefinitionService, bool bundleFastStart)
         {
             _configService = configService;
             _delayProfileService = delayProfileService;
             _qualityDefinitionService = qualityDefinitionService;
+            _bundleFastStart = bundleFastStart;
         }
 
         public int Compare(DownloadDecision x, DownloadDecision y)
         {
+            if (_bundleFastStart)
+            {
+                // Bundle fast-start: a bundle is only useful if it downloads, so seeders count more than in a normal search.
+                // Quality and custom format score still come first; then well seeded releases (>= healthy threshold) beat
+                // poorly seeded ones; then the normal pack/episode preferences; then more seeders before indexer priority,
+                // peers and size.
+                var fastStartComparers = new List<CompareDelegate>
+                {
+                    CompareQuality,
+                    CompareCustomFormatScore,
+                    CompareBundleHealth,
+                    CompareProtocol,
+                    CompareEpisodeCount,
+                    CompareEpisodeNumber,
+                    CompareSeedersIfTorrent,
+                    CompareIndexerPriority,
+                    ComparePeersIfTorrent,
+                    CompareAgeIfUsenet,
+                    CompareSize
+                };
+
+                return fastStartComparers.Select(comparer => comparer(x, y)).FirstOrDefault(result => result != 0);
+            }
+
             var comparers = new List<CompareDelegate>
             {
                 CompareQuality,
@@ -147,6 +179,27 @@ namespace NzbDrone.Core.DecisionEngine
 
                     return peers.HasValue && peers.Value > 0 ? Math.Round(Math.Log10(peers.Value)) : 0;
                 }));
+        }
+
+        private int CompareBundleHealth(DownloadDecision x, DownloadDecision y)
+        {
+            return CompareBy(x.RemoteEpisode, y.RemoteEpisode, remoteEpisode => Download.Bundles.BundleSeeders.IsHealthy(remoteEpisode));
+        }
+
+        private int CompareSeedersIfTorrent(DownloadDecision x, DownloadDecision y)
+        {
+            if (x.RemoteEpisode.Release.DownloadProtocol != DownloadProtocol.Torrent ||
+                y.RemoteEpisode.Release.DownloadProtocol != DownloadProtocol.Torrent)
+            {
+                return 0;
+            }
+
+            return CompareBy(x.RemoteEpisode, y.RemoteEpisode, remoteEpisode =>
+            {
+                var seeders = TorrentInfo.GetSeeders(remoteEpisode.Release);
+
+                return seeders.HasValue && seeders.Value > 0 ? Math.Round(Math.Log10(seeders.Value)) : 0;
+            });
         }
 
         private int CompareAgeIfUsenet(DownloadDecision x, DownloadDecision y)

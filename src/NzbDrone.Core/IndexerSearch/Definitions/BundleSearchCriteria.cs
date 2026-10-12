@@ -9,6 +9,14 @@ namespace NzbDrone.Core.IndexerSearch.Definitions
     // Derives from SpecialEpisodeSearchCriteria so every indexer that supports text queries handles it without changes.
     public class BundleSearchCriteria : SpecialEpisodeSearchCriteria
     {
+        // Shown in logs: "Series bundles" or "Season pack"
+        public string Tier { get; set; } = "Series bundles";
+
+        public static string BuildSeasonQuery(Series series, int seasonNumber)
+        {
+            return $"{GetCleanSceneTitle(series.Title)}+Season+{seasonNumber}";
+        }
+
         public static string[] BuildQueries(Series series, List<Episode> requestedEpisodes)
         {
             var title = GetCleanSceneTitle(series.Title);
@@ -36,7 +44,7 @@ namespace NzbDrone.Core.IndexerSearch.Definitions
 
         public override string ToString()
         {
-            return string.Format("[{0}] Series bundles ({1})", Series.Title, string.Join(", ", EpisodeQueryTitles.Select(q => q.Replace('+', ' '))));
+            return string.Format("[{0}] {1} ({2})", Series.Title, Tier, string.Join(", ", EpisodeQueryTitles.Select(q => q.Replace('+', ' '))));
         }
     }
 }

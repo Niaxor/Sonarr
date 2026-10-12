@@ -63,6 +63,11 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
             Mocker.GetMock<ISceneMappingService>()
                 .Setup(s => s.GetSceneNames(It.IsAny<int>(), It.IsAny<List<int>>(), It.IsAny<List<int>>()))
                 .Returns(new List<string>());
+
+            // Grading stand-in: most seeders first
+            Mocker.GetMock<IPrioritizeDownloadDecision>()
+                .Setup(s => s.PrioritizeBundleDecisions(It.IsAny<List<DownloadDecision>>()))
+                .Returns<List<DownloadDecision>>(l => l.OrderByDescending(d => TorrentInfo.GetSeeders(d.RemoteEpisode.Release) ?? 0).ToList());
         }
 
         [Test]
@@ -93,83 +98,125 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
                 .Should().Equal("Series+Title+Complete");
         }
 
-        [Test]
-        public async Task should_search_bundles_then_first_anime_episode_with_bundle_flag()
+        private void GivenBundleQueryResult(params DownloadDecision[] decisions)
         {
-            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
+            Mocker.GetMock<IMakeDownloadDecision>()
+                .Setup(s => s.GetSearchDecision(It.IsAny<List<ReleaseInfo>>(), It.Is<SearchCriteriaBase>(c => c is BundleSearchCriteria && ((BundleSearchCriteria)c).Tier == "Series bundles")))
+                .Returns(decisions.ToList());
+        }
 
-            await Subject.BundleFastStartSearch(_anime, season1, false);
+        private void GivenFirstEpisodeResult(params DownloadDecision[] decisions)
+        {
+            Mocker.GetMock<IMakeDownloadDecision>()
+                .Setup(s => s.GetSearchDecision(It.IsAny<List<ReleaseInfo>>(), It.Is<SearchCriteriaBase>(c => c is AnimeEpisodeSearchCriteria)))
+                .Returns(decisions.ToList());
+        }
 
-            // Nothing found by a bundle query: all three are sent, one at a time, then the first episode query
-            _criteria.Should().HaveCount(4);
-
-            for (var i = 0; i < 3; i++)
+        private DownloadDecision Release(string title, List<Episode> episodes, int seeders)
+        {
+            return new DownloadDecision(new RemoteEpisode
             {
-                var bundle = _criteria[i].Should().BeOfType<BundleSearchCriteria>().Subject;
-                var expected = new[] { "Naruto+Complete", "Naruto+Batch", "Naruto+001" };
-                bundle.EpisodeQueryTitles.Should().Equal(expected[i]);
-                bundle.BundleRequestedEpisodes.Should().HaveCount(35);
-                bundle.Episodes.Should().HaveCount(35);
-            }
+                Series = _anime,
+                Episodes = episodes,
+                Release = new TorrentInfo { Title = title, Guid = title, Seeders = seeders, DownloadProtocol = DownloadProtocol.Torrent }
+            });
+        }
 
-            var episode = _criteria[3].Should().BeOfType<AnimeEpisodeSearchCriteria>().Subject;
-            episode.AbsoluteEpisodeNumber.Should().Be(1);
+        private List<string> Queries()
+        {
+            return _criteria.Select(c => c switch
+                {
+                    BundleSearchCriteria b => string.Join(",", b.EpisodeQueryTitles),
+                    AnimeEpisodeSearchCriteria a => $"E{a.AbsoluteEpisodeNumber}",
+                    SeasonSearchCriteria se => $"S{se.SeasonNumber}",
+                    SingleEpisodeSearchCriteria e => $"S{e.SeasonNumber}E{e.EpisodeNumber}",
+                    _ => c.ToString()
+                })
+                .ToList();
+        }
+
+        [Test]
+        public async Task should_always_search_bundle_season_and_first_episode_tiers()
+        {
+            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
+
+            await Subject.BundleFastStartSearch(_anime, season1, false);
+
+            // Nothing found: all three tiers, then the remaining bundle query variants
+            Queries().Should().BeEquivalentTo("Naruto+Complete", "Naruto+Season+1", "E1", "Naruto+Batch", "Naruto+001");
+
+            _criteria.Should().OnlyContain(c => c.IsBundleFastStart && c.BundleRequestedEpisodes.Count == 35);
+
+            var episode = _criteria.OfType<AnimeEpisodeSearchCriteria>().Single();
             episode.IsSeasonSearch.Should().BeTrue();
-            episode.IsBundleFastStart.Should().BeTrue();
-            episode.BundleRequestedEpisodes.Should().HaveCount(35);
             episode.Episodes.Should().ContainSingle(e => e.Id == 1);
+
+            _criteria.OfType<BundleSearchCriteria>().Single(c => c.Tier == "Season pack").EpisodeQueryTitles.Should().Equal("Naruto+Season+1");
         }
 
-        [Test]
-        public async Task should_skip_remaining_bundle_queries_once_a_bundle_is_found()
+        [TestCase(3, 5)]
+        [TestCase(19, 5)]
+        [TestCase(20, 3)]
+        [TestCase(94, 3)]
+        public async Task should_only_skip_bundle_variants_when_the_best_graded_release_is_well_seeded(int seeders, int expectedSearches)
         {
+            // Slime: "Complete" found a 3 seeder pack, the 94 seeder pack was only found by "Batch"
             var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
 
-            Mocker.GetMock<IMakeDownloadDecision>()
-                .Setup(s => s.GetSearchDecision(It.IsAny<List<ReleaseInfo>>(), It.Is<SearchCriteriaBase>(c => c is BundleSearchCriteria)))
-                .Returns(new List<DownloadDecision>
-                {
-                    new DownloadDecision(new RemoteEpisode { Series = _anime, Episodes = season1, Release = new ReleaseInfo { Title = "[Anime Time] Naruto Complete" } })
-                });
+            GivenBundleQueryResult(Release("[HorribleSubs] Naruto - Complete 01-35 [1080p]", season1, seeders));
 
             await Subject.BundleFastStartSearch(_anime, season1, false);
 
-            _criteria.Should().HaveCount(2);
-            _criteria[0].Should().BeOfType<BundleSearchCriteria>().Which.EpisodeQueryTitles.Should().Equal("Naruto+Complete");
-            _criteria[1].Should().BeOfType<AnimeEpisodeSearchCriteria>();
+            _criteria.Should().HaveCount(expectedSearches);
+            Queries().Should().Contain(new[] { "Naruto+Complete", "Naruto+Season+1", "E1" }, "the tiers are never skipped");
         }
 
         [Test]
-        public async Task should_continue_bundle_queries_when_only_single_episodes_were_found()
+        public async Task should_grade_all_tiers_before_skipping_bundle_variants()
+        {
+            // A healthy bundle is found, but the grading is done over every tier: the best (here a better seeded
+            // first-episode release) decides; bundle variants are skipped because it is healthy, and nothing is grabbed here
+            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
+
+            GivenBundleQueryResult(Release("[Group] Naruto Complete", season1, 30));
+            GivenFirstEpisodeResult(Release("[Group] Naruto - 01", season1.Take(1).ToList(), 500));
+
+            var decisions = await Subject.BundleFastStartSearch(_anime, season1, false);
+
+            Queries().Should().BeEquivalentTo("Naruto+Complete", "Naruto+Season+1", "E1");
+            decisions.Should().HaveCount(2);
+
+            Mocker.GetMock<IPrioritizeDownloadDecision>()
+                .Verify(v => v.PrioritizeBundleDecisions(It.Is<List<DownloadDecision>>(l => l.Count == 2)), Times.Once());
+        }
+
+        [Test]
+        public async Task should_search_remaining_bundle_variants_when_best_release_is_poorly_seeded()
         {
             var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
 
-            Mocker.GetMock<IMakeDownloadDecision>()
-                .Setup(s => s.GetSearchDecision(It.IsAny<List<ReleaseInfo>>(), It.Is<SearchCriteriaBase>(c => c is BundleSearchCriteria)))
-                .Returns(new List<DownloadDecision>
-                {
-                    new DownloadDecision(new RemoteEpisode { Series = _anime, Episodes = season1.Take(1).ToList(), Release = new ReleaseInfo { Title = "[Group] Naruto - 001" } })
-                });
+            GivenBundleQueryResult(Release("[HorribleSubs] Naruto - Complete 01-35 [1080p]", season1, 3));
+            GivenFirstEpisodeResult(Release("[Group] Naruto - 01", season1.Take(1).ToList(), 2));
 
             await Subject.BundleFastStartSearch(_anime, season1, false);
 
-            _criteria.Should().HaveCount(4);
+            Queries().Should().BeEquivalentTo("Naruto+Complete", "Naruto+Season+1", "E1", "Naruto+Batch", "Naruto+001");
         }
 
         [Test]
-        public async Task should_search_bundles_then_first_season_for_standard_series()
+        public async Task should_search_bundle_season_and_first_episode_for_standard_series()
         {
             var series = new Series { Id = 2, Title = "Series Title", SeriesType = SeriesTypes.Standard, Tags = new HashSet<int>() };
             var episodes = Enumerable.Range(1, 10).Select(i => new Episode { Id = i, SeriesId = 2, SeasonNumber = 2, EpisodeNumber = i }).ToList();
 
+            _mockIndexer.Setup(v => v.Fetch(It.IsAny<SingleEpisodeSearchCriteria>()))
+                .Callback<SingleEpisodeSearchCriteria>(s => _criteria.Add(s))
+                .Returns(Task.FromResult<IList<ReleaseInfo>>(new List<ReleaseInfo>()));
+
             await Subject.BundleFastStartSearch(series, episodes, false);
 
-            _criteria.Should().HaveCount(2);
-            _criteria[0].Should().BeOfType<BundleSearchCriteria>().Which.EpisodeQueryTitles.Should().Equal("Series+Title+Complete");
-
-            var season = _criteria[1].Should().BeOfType<SeasonSearchCriteria>().Subject;
-            season.SeasonNumber.Should().Be(2);
-            season.IsBundleFastStart.Should().BeTrue();
+            Queries().Should().BeEquivalentTo("Series+Title+Complete", "S2", "S2E1");
+            _criteria.Should().OnlyContain(c => c.IsBundleFastStart);
         }
 
         [Test]

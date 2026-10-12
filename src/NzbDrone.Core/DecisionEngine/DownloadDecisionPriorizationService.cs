@@ -9,6 +9,9 @@ namespace NzbDrone.Core.DecisionEngine
     public interface IPrioritizeDownloadDecision
     {
         List<DownloadDecision> PrioritizeDecisions(List<DownloadDecision> decisions);
+
+        // Bundle fast-start ordering, see DownloadDecisionComparer
+        List<DownloadDecision> PrioritizeBundleDecisions(List<DownloadDecision> decisions);
     }
 
     public class DownloadDecisionPriorizationService : IPrioritizeDownloadDecision
@@ -22,6 +25,12 @@ namespace NzbDrone.Core.DecisionEngine
             _configService = configService;
             _delayProfileService = delayProfileService;
             _qualityDefinitionService = qualityDefinitionService;
+        }
+
+        public List<DownloadDecision> PrioritizeBundleDecisions(List<DownloadDecision> decisions)
+        {
+            return decisions.OrderByDescending(decision => decision, new DownloadDecisionComparer(_configService, _delayProfileService, _qualityDefinitionService, true))
+                            .ToList();
         }
 
         public List<DownloadDecision> PrioritizeDecisions(List<DownloadDecision> decisions)

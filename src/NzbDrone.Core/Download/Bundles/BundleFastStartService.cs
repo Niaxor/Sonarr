@@ -148,13 +148,24 @@ namespace NzbDrone.Core.Download.Bundles
                 .Where(d => d.Approved && d.RemoteEpisode.Episodes.Any(e => e.Id == firstEpisode.Id))
                 .ToList();
 
+            // A bundle that will hardly download is no use for a fast start, leave it to the normal search
+            foreach (var poorlySeeded in candidates.Where(d => BundleSeeders.IsBundle(d.RemoteEpisode) && BundleSeeders.IsBelowMinimum(d.RemoteEpisode)).ToList())
+            {
+                _logger.Info("Bundle fast-start: ignoring '{0}', only {1} seeders (minimum {2})",
+                    poorlySeeded.RemoteEpisode.Release.Title,
+                    TorrentInfo.GetSeeders(poorlySeeded.RemoteEpisode.Release),
+                    BundleSeeders.Minimum);
+
+                candidates.Remove(poorlySeeded);
+            }
+
             if (candidates.Empty())
             {
                 _logger.Info("Bundle fast-start: no acceptable release found for {0} {1}x{2:00}, continuing with the normal search", series.Title, firstEpisode.SeasonNumber, firstEpisode.EpisodeNumber);
                 return BundleFastStartResult.None;
             }
 
-            var winner = _prioritizeDownloadDecision.PrioritizeDecisions(candidates).First();
+            var winner = _prioritizeDownloadDecision.PrioritizeBundleDecisions(candidates).First();
             var remoteEpisode = winner.RemoteEpisode;
 
             _logger.Info("Bundle fast-start timing: ranking {0} candidates took {1} ms, best is '{2}' ({3} episodes)", candidates.Count, phase.ElapsedMilliseconds, remoteEpisode.Release.Title, remoteEpisode.Episodes.Count);
