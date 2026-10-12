@@ -7,6 +7,7 @@ using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Messaging.Events;
+using NzbDrone.Core.Tv;
 
 namespace NzbDrone.Core.Download.Bundles
 {
@@ -51,6 +52,7 @@ namespace NzbDrone.Core.Download.Bundles
         private readonly ITrackedDownloadService _trackedDownloadService;
         private readonly IProvideDownloadClient _downloadClientProvider;
         private readonly IHistoryService _historyService;
+        private readonly IEpisodeService _episodeService;
         private readonly Logger _logger;
 
         private readonly ConcurrentDictionary<string, FastStartTorrent> _torrents = new ConcurrentDictionary<string, FastStartTorrent>(StringComparer.OrdinalIgnoreCase);
@@ -60,8 +62,10 @@ namespace NzbDrone.Core.Download.Bundles
                                           ITrackedDownloadService trackedDownloadService,
                                           IProvideDownloadClient downloadClientProvider,
                                           IHistoryService historyService,
+                                          IEpisodeService episodeService,
                                           Logger logger)
         {
+            _episodeService = episodeService;
             _sourceService = sourceService;
             _leaseService = leaseService;
             _trackedDownloadService = trackedDownloadService;
@@ -166,6 +170,13 @@ namespace NzbDrone.Core.Download.Bundles
                 return;
             }
 
+            // Decision 5: a finished file of an episode without a file is imported first, then the torrent can go
+            if (HasFinishedUnimportedFiles(trackedDownload))
+            {
+                _logger.Debug("Tiered grab: {0} has finished files that are not imported yet, retiring it afterwards", trackedDownload.DownloadItem.Title);
+                return;
+            }
+
             if (_leaseService.InStartupGrace)
             {
                 _logger.Debug("Tiered grab: {0} is the best source for no episode, retiring after the startup grace period", trackedDownload.DownloadItem.Title);
@@ -234,6 +245,41 @@ namespace NzbDrone.Core.Download.Bundles
             catch (Exception ex)
             {
                 _logger.Warn(ex, "Tiered grab: couldn't retire {0}", trackedDownload.DownloadItem.Title);
+            }
+        }
+
+        private bool HasFinishedUnimportedFiles(TrackedDownload trackedDownload)
+        {
+            if (GetFileClient(trackedDownload) is not { } client)
+            {
+                return false;
+            }
+
+            try
+            {
+                var finished = client.GetBundleFileProgress(trackedDownload.DownloadItem)
+                    .Where(f => f.IsComplete)
+                    .Select(f => f.Index)
+                    .ToHashSet();
+
+                if (finished.Empty())
+                {
+                    return false;
+                }
+
+                var episodeIds = _historyService.FindByDownloadId(trackedDownload.DownloadItem.DownloadId)
+                    .Where(h => h.EventType == EpisodeHistoryEventType.Grabbed)
+                    .Where(h => FastStartSourceService.GetFileIndex(h) is { } index && finished.Contains(index))
+                    .Select(h => h.EpisodeId)
+                    .Distinct()
+                    .ToList();
+
+                return episodeIds.Any() && _episodeService.GetEpisodes(episodeIds).Any(e => !e.HasFile);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Tiered grab: couldn't check finished files of {0}", trackedDownload.DownloadItem.Title);
+                return false;
             }
         }
 

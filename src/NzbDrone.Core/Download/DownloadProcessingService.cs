@@ -93,6 +93,19 @@ namespace NzbDrone.Core.Download
                 }
             }
 
+            // Tiered grab: imported fast-start torrents (no longer trackable) are retired once nothing is sourced from them
+            foreach (var trackedDownload in _trackedDownloadService.GetTrackedDownloads().Where(t => t.IsFastStart && t.State == TrackedDownloadState.Imported).ToList())
+            {
+                try
+                {
+                    _fastStartRetirementService.Check(trackedDownload);
+                }
+                catch (Exception e)
+                {
+                    _logger.Debug(e, "Failed to check fast-start download: {0}", trackedDownload.DownloadItem.Title);
+                }
+            }
+
             // Imported downloads are no longer trackable so process them after processing trackable downloads
             RemoveCompletedDownloads();
 

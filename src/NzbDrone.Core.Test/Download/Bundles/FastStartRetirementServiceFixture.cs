@@ -11,6 +11,7 @@ using NzbDrone.Core.Download.Bundles;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Test.Framework;
+using NzbDrone.Core.Tv;
 
 namespace NzbDrone.Core.Test.Download.Bundles
 {
@@ -76,6 +77,10 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
         private void GivenStartupGraceOver()
         {
+            Mocker.GetMock<IEpisodeService>()
+                .Setup(s => s.GetEpisodes(It.IsAny<IEnumerable<int>>()))
+                .Returns<IEnumerable<int>>(ids => ids.Select(i => new Episode { Id = i, EpisodeFileId = 1 }).ToList());
+
             Mocker.GetMock<IFastStartLeaseService>().SetupGet(s => s.InStartupGrace).Returns(false);
             Mocker.GetMock<IFastStartLeaseService>().Setup(s => s.GetLeasedFiles(It.IsAny<string>())).Returns(new List<int?>());
         }
@@ -106,6 +111,31 @@ namespace NzbDrone.Core.Test.Download.Bundles
             Mocker.GetMock<ITrackedDownloadService>().Verify(s => s.StopTracking(OldHash), Times.Once());
 
             Subject.GetTorrents().Single().State.Should().Be(FastStartRetirementService.Retired);
+        }
+
+        [Test]
+        public void finished_file_of_an_episode_without_a_file_is_imported_before_retirement()
+        {
+            GivenStartupGraceOver();
+            _active.Clear();
+
+            // File 0 (episode 1) is finished and selected but not imported yet
+            Mocker.GetMock<IEpisodeService>()
+                .Setup(s => s.GetEpisodes(It.IsAny<IEnumerable<int>>()))
+                .Returns(new List<Episode> { new Episode { Id = 1, EpisodeFileId = 0 } });
+
+            Subject.Check(_trackedDownload);
+
+            _client.Verify(c => c.RemoveItem(It.IsAny<DownloadClientItem>(), It.IsAny<bool>()), Times.Never());
+
+            // Imported: now it can go
+            Mocker.GetMock<IEpisodeService>()
+                .Setup(s => s.GetEpisodes(It.IsAny<IEnumerable<int>>()))
+                .Returns(new List<Episode> { new Episode { Id = 1, EpisodeFileId = 5 } });
+
+            Subject.Check(_trackedDownload);
+
+            _client.Verify(c => c.RemoveItem(_trackedDownload.DownloadItem, true), Times.Once());
         }
 
         [Test]
