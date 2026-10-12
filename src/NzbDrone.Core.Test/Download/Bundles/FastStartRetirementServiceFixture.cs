@@ -206,6 +206,29 @@ namespace NzbDrone.Core.Test.Download.Bundles
         }
 
         [Test]
+        public void torrent_not_grabbed_by_a_tiered_grab_search_is_never_touched()
+        {
+            GivenStartupGraceOver();
+            _active.Clear();
+
+            var legacy = new EpisodeHistory { DownloadId = OldHash, EpisodeId = 1, EventType = EpisodeHistoryEventType.Grabbed, Date = DateTime.UtcNow };
+            legacy.Data[EpisodeHistory.BUNDLE_SELECTION] = "true";
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId(OldHash))
+                .Returns(new List<EpisodeHistory> { legacy });
+
+            _trackedDownload.IsFastStart = false;
+
+            Subject.Supersede(OldHash, new[] { 1 });
+            Subject.Check(_trackedDownload);
+
+            _client.Verify(c => c.RemoveItem(It.IsAny<DownloadClientItem>(), It.IsAny<bool>()), Times.Never());
+            _client.As<IProvideBundleFileProgress>()
+                .Verify(c => c.SetFilePriority(It.IsAny<DownloadClientItem>(), It.IsAny<IEnumerable<int>>(), It.IsAny<int>()), Times.Never());
+        }
+
+        [Test]
         public void torrent_with_active_episodes_is_kept()
         {
             GivenStartupGraceOver();

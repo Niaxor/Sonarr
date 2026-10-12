@@ -101,6 +101,13 @@ namespace NzbDrone.Core.Download.Bundles
 
         public void Supersede(string downloadId, IEnumerable<int> episodeIds)
         {
+            // Only torrents grabbed by a tiered-grab session are changed or retired, never other downloads
+            if (!_historyService.FindByDownloadId(downloadId).Any(FastStartSourceService.IsTieredGrab))
+            {
+                _logger.Debug("Tiered grab: {0} was not grabbed by a tiered-grab search, leaving it alone", downloadId);
+                return;
+            }
+
             var superseded = episodeIds.ToHashSet();
             var trackedDownload = _trackedDownloadService.Find(downloadId);
 
@@ -139,6 +146,11 @@ namespace NzbDrone.Core.Download.Bundles
 
         public void Check(TrackedDownload trackedDownload)
         {
+            if (!trackedDownload.IsFastStart)
+            {
+                return;
+            }
+
             var downloadId = trackedDownload.DownloadItem.DownloadId;
             var torrent = _torrents.GetOrAdd(downloadId, id => new FastStartTorrent { DownloadId = id.ToUpperInvariant(), Title = trackedDownload.DownloadItem.Title, GrabbedAt = trackedDownload.Added ?? DateTime.UtcNow });
 

@@ -42,7 +42,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
         private bool IsFastStartDownload(string downloadId)
         {
             return downloadId.IsNotNullOrWhiteSpace() &&
-                   _historyService.FindByDownloadId(downloadId).Any(Download.Bundles.FastStartSourceService.IsFastStartGrab);
+                   _historyService.FindByDownloadId(downloadId).Any(Download.Bundles.FastStartSourceService.IsTieredGrab);
         }
 
         public DownloadSpecDecision IsSatisfiedBy(RemoteEpisode subject, SearchCriteriaBase searchCriteria)

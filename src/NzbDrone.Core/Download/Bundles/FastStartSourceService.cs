@@ -63,6 +63,13 @@ namespace NzbDrone.Core.Download.Bundles
             _episodeService = episodeService;
         }
 
+        // Grabbed by a tiered-grab session of this version: only these downloads are replaced per episode and retired.
+        // Older fast-start grabs (bundle selection only) are listed as sources but never touched.
+        public static bool IsTieredGrab(EpisodeHistory history)
+        {
+            return history.EventType == EpisodeHistoryEventType.Grabbed && GetData(history, FastStartKey) == "true";
+        }
+
         public static bool IsFastStartGrab(EpisodeHistory history)
         {
             return history.EventType == EpisodeHistoryEventType.Grabbed &&

@@ -142,7 +142,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     trackedDownload.Indexer = grabbedEvent?.Data?.GetValueOrDefault("indexer");
                     trackedDownload.Added = grabbedEvent?.Date;
 
-                    trackedDownload.IsFastStart = historyItems.Any(FastStartSourceService.IsFastStartGrab);
+                    trackedDownload.IsFastStart = historyItems.Any(FastStartSourceService.IsTieredGrab);
 
                     if (grabbedEvent != null && grabbedEvent.IsBundleSelectionGrab())
                     {
