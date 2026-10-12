@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using NLog;
 using NzbDrone.Common.Extensions;
@@ -35,6 +36,9 @@ namespace NzbDrone.Core.Download.Bundles
         public HashSet<int> CoveredEpisodeIds { get; set; }
         public int Grabbed { get; set; }
 
+        // Tiered grab: the whole search ran (all tiers and every episode); the covered episodes must not be searched again
+        public bool SearchCompleted { get; set; }
+
         public static BundleFastStartResult None => new BundleFastStartResult();
     }
 
@@ -53,6 +57,8 @@ namespace NzbDrone.Core.Download.Bundles
         private readonly IIndexerFactory _indexerFactory;
         private readonly IHttpClient _httpClient;
         private readonly IEpisodeService _episodeService;
+        private readonly IFastStartSourceService _sourceService;
+        private readonly IFastStartRetirementService _retirementService;
         private readonly Logger _logger;
 
         public BundleFastStartService(ISearchForReleases releaseSearchService,
@@ -62,6 +68,8 @@ namespace NzbDrone.Core.Download.Bundles
                                       IIndexerFactory indexerFactory,
                                       IHttpClient httpClient,
                                       IEpisodeService episodeService,
+                                      IFastStartSourceService sourceService,
+                                      IFastStartRetirementService retirementService,
                                       Logger logger)
         {
             _releaseSearchService = releaseSearchService;
@@ -71,6 +79,8 @@ namespace NzbDrone.Core.Download.Bundles
             _indexerFactory = indexerFactory;
             _httpClient = httpClient;
             _episodeService = episodeService;
+            _sourceService = sourceService;
+            _retirementService = retirementService;
             _logger = logger;
         }
 
@@ -133,102 +143,137 @@ namespace NzbDrone.Core.Download.Bundles
                 return BundleFastStartResult.None;
             }
 
-            var firstEpisode = requested.First();
             var total = Stopwatch.StartNew();
-            var phase = Stopwatch.StartNew();
+            var session = new TieredGrabSession(series, requested);
 
-            _logger.ProgressInfo("Bundle fast-start: searching for bundles of {0} covering {1} requested episodes", series.Title, requested.Count);
+            _logger.ProgressInfo("Tiered grab: searching for {0} ({1} requested episodes): bundles, season pack, first episode, then every episode",
+                series.Title,
+                requested.Count);
 
-            var decisions = await _releaseSearchService.BundleFastStartSearch(series, requested, userInvokedSearch);
+            await _releaseSearchService.TieredSearch(series, requested, userInvokedSearch, decisions => ProcessResults(session, decisions));
 
-            _logger.Info("Bundle fast-start timing: searches and decisions took {0} ms ({1} releases)", phase.ElapsedMilliseconds, decisions.Count);
-            phase.Restart();
+            _logger.ProgressInfo("Tiered grab: search for {0} finished in {1} ms, {2} grabs, {3} of {4} requested episodes have a source",
+                series.Title,
+                total.ElapsedMilliseconds,
+                session.Grabs,
+                session.Sources.Count,
+                requested.Count);
 
-            var candidates = decisions
-                .Where(d => d.Approved && d.RemoteEpisode.Episodes.Any(e => e.Id == firstEpisode.Id))
-                .ToList();
-
-            // A bundle that will hardly download is no use for a fast start, leave it to the normal search
-            foreach (var poorlySeeded in candidates.Where(d => BundleSeeders.IsBundle(d.RemoteEpisode) && BundleSeeders.IsBelowMinimum(d.RemoteEpisode)).ToList())
+            // The whole search ran here (decision 3): the caller must not search these episodes again
+            return new BundleFastStartResult
             {
-                _logger.Info("Bundle fast-start: ignoring '{0}', only {1} seeders (minimum {2})",
-                    poorlySeeded.RemoteEpisode.Release.Title,
-                    TorrentInfo.GetSeeders(poorlySeeded.RemoteEpisode.Release),
-                    BundleSeeders.Minimum);
+                CoveredEpisodeIds = requested.Select(e => e.Id).ToHashSet(),
+                Grabbed = session.Grabs,
+                SearchCompleted = true
+            };
+        }
 
-                candidates.Remove(poorlySeeded);
+        private class TieredGrabSession
+        {
+            public TieredGrabSession(Series series, List<Episode> requested)
+            {
+                Series = series;
+                Requested = requested;
+                RequestedIds = requested.Select(e => e.Id).ToHashSet();
             }
 
-            if (candidates.Empty())
+            public Series Series { get; }
+            public List<Episode> Requested { get; }
+            public HashSet<int> RequestedIds { get; }
+
+            // Best release graded so far per requested episode, and the download it was grabbed as
+            public Dictionary<int, DownloadDecision> Sources { get; } = new Dictionary<int, DownloadDecision>();
+            public SemaphoreSlim Lock { get; } = new SemaphoreSlim(1, 1);
+            public int Grabs { get; set; }
+        }
+
+        // Every graded batch: grab each release that ranks better than the current source for any requested episode,
+        // for exactly those episodes (decisions 1 and 4)
+        private async Task ProcessResults(TieredGrabSession session, List<DownloadDecision> decisions)
+        {
+            await session.Lock.WaitAsync();
+
+            try
             {
-                _logger.Info("Bundle fast-start: no acceptable release found for {0} {1}x{2:00}, continuing with the normal search", series.Title, firstEpisode.SeasonNumber, firstEpisode.EpisodeNumber);
-                return BundleFastStartResult.None;
+                var candidates = BundleSeeders.GetCandidatesForEpisodes(decisions, session.RequestedIds);
+
+                foreach (var candidate in _prioritizeDownloadDecision.PrioritizeBundleDecisions(candidates))
+                {
+                    var better = candidate.RemoteEpisode.Episodes
+                        .Where(e => session.RequestedIds.Contains(e.Id))
+                        .Where(e => !session.Sources.TryGetValue(e.Id, out var current) ||
+                                    (current.RemoteEpisode.Release.Guid != candidate.RemoteEpisode.Release.Guid &&
+                                     _prioritizeDownloadDecision.CompareBundleDecisions(candidate, current) > 0))
+                        .OrderBy(e => e.SeasonNumber)
+                        .ThenBy(e => e.EpisodeNumber)
+                        .ToList();
+
+                    if (better.Empty())
+                    {
+                        continue;
+                    }
+
+                    await Grab(session, candidate, better);
+                }
             }
-
-            var winner = _prioritizeDownloadDecision.PrioritizeBundleDecisions(candidates).First();
-            var remoteEpisode = winner.RemoteEpisode;
-
-            _logger.Info("Bundle fast-start timing: ranking {0} candidates took {1} ms, best is '{2}' ({3} episodes)", candidates.Count, phase.ElapsedMilliseconds, remoteEpisode.Release.Title, remoteEpisode.Episodes.Count);
-            phase.Restart();
-
-            if (!remoteEpisode.IsNarrowedBundle && remoteEpisode.Episodes.Count < 2)
+            catch (Exception ex)
             {
-                _logger.Info("Bundle fast-start: best release for {0} {1}x{2:00} is a single episode ({3}), continuing with the normal search",
-                    series.Title,
-                    firstEpisode.SeasonNumber,
-                    firstEpisode.EpisodeNumber,
-                    remoteEpisode.Release.Title);
-
-                return BundleFastStartResult.None;
+                _logger.Warn(ex, "Tiered grab: couldn't process search results for {0}", session.Series.Title);
             }
-
-            // Early stop (grab the pack and skip the per-episode searches it covers) only for a well seeded winner
-            if (!BundleSeeders.IsHealthy(remoteEpisode))
+            finally
             {
-                _logger.Info("Bundle fast-start: best pack '{0}' has {1} seeders (fewer than {2}), continuing with the normal search",
-                    remoteEpisode.Release.Title,
-                    TorrentInfo.GetSeeders(remoteEpisode.Release)?.ToString() ?? "unknown",
-                    BundleSeeders.Healthy);
-
-                return BundleFastStartResult.None;
+                session.Lock.Release();
             }
+        }
 
-            // Series bundles (complete series, batches, multi-season packs) and packs covering more than the request are only
-            // grabbed with file selection. A plain season pack that matches the request may still be grabbed as a whole.
-            var requiresSelection = remoteEpisode.IsNarrowedBundle ||
-                                    remoteEpisode.ParsedEpisodeInfo?.IsSeriesBundle == true ||
-                                    remoteEpisode.ParsedEpisodeInfo?.IsMultiSeason == true;
+        private async Task Grab(TieredGrabSession session, DownloadDecision candidate, List<Episode> better)
+        {
+            var series = session.Series;
+            var remoteEpisode = candidate.RemoteEpisode;
+            var isPack = remoteEpisode.IsNarrowedBundle || remoteEpisode.Episodes.Count > 1;
+            var coversMore = remoteEpisode.Episodes.Count(e => session.RequestedIds.Contains(e.Id)) > better.Count;
+
+            // Series bundles, multi-season packs and packs taking over only some of their episodes need file selection
+            var requiresSelection = isPack &&
+                                    (remoteEpisode.IsNarrowedBundle ||
+                                     coversMore ||
+                                     remoteEpisode.ParsedEpisodeInfo?.IsSeriesBundle == true ||
+                                     remoteEpisode.ParsedEpisodeInfo?.IsMultiSeason == true);
 
             int? downloadClientId = null;
-            var downloadClient = GetDownloadClient(remoteEpisode);
 
-            if (downloadClient is QBittorrent)
+            if (isPack)
             {
-                // Always select files with qBittorrent, even when every episode in the bundle was requested,
-                // so movies, openings/endings and extras are never downloaded.
-                if (await SelectBundleFiles(series, remoteEpisode, firstEpisode))
+                var downloadClient = GetDownloadClient(remoteEpisode);
+
+                if (downloadClient is QBittorrent)
                 {
-                    downloadClientId = downloadClient.Definition.Id;
+                    var allEpisodes = remoteEpisode.Episodes;
+                    remoteEpisode.Episodes = better;
+
+                    if (await SelectBundleFiles(series, remoteEpisode, better.First()))
+                    {
+                        downloadClientId = downloadClient.Definition.Id;
+                    }
+                    else
+                    {
+                        remoteEpisode.Episodes = allEpisodes;
+
+                        if (requiresSelection)
+                        {
+                            return;
+                        }
+                    }
                 }
                 else if (requiresSelection)
                 {
-                    return BundleFastStartResult.None;
-                }
-                else
-                {
-                    _logger.Info("Bundle fast-start: grabbing season pack '{0}' without file selection", remoteEpisode.Release.Title);
+                    _logger.Debug("Tiered grab: '{0}' needs file selection, only supported with qBittorrent", remoteEpisode.Release.Title);
+                    return;
                 }
             }
-            else if (requiresSelection)
-            {
-                _logger.Info("Bundle fast-start: '{0}' would be sent to {1}, bundle downloads with file selection are only supported with qBittorrent. Continuing with the normal search",
-                    remoteEpisode.Release.Title,
-                    downloadClient?.Definition?.Name ?? "no download client");
 
-                return BundleFastStartResult.None;
-            }
-
-            phase.Restart();
+            var previous = (_sourceService.GetSourcesForSeries(series.Id) ?? new List<FastStartSource>()).ToDictionary(s => s.EpisodeId, s => s.DownloadId);
+            remoteEpisode.FastStartGrab = true;
 
             try
             {
@@ -236,27 +281,45 @@ namespace NzbDrone.Core.Download.Bundles
             }
             catch (Exception ex)
             {
-                _logger.Warn(ex, "Bundle fast-start: couldn't grab '{0}', continuing with the normal search", remoteEpisode.Release.Title);
-                return BundleFastStartResult.None;
+                _logger.Warn(ex, "Tiered grab: couldn't grab '{0}'", remoteEpisode.Release.Title);
+                return;
             }
 
-            _logger.Info("Bundle fast-start timing: sending to the download client took {0} ms", phase.ElapsedMilliseconds);
+            session.Grabs++;
 
-            var requestedIds = requested.Select(e => e.Id).ToHashSet();
-            var covered = remoteEpisode.Episodes.Select(e => e.Id).Where(requestedIds.Contains).ToHashSet();
+            var downloadId = (remoteEpisode.Release as TorrentInfo)?.InfoHash?.ToUpperInvariant();
+            var taken = remoteEpisode.Episodes.Where(e => session.RequestedIds.Contains(e.Id)).ToList();
+            var superseded = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
 
-            _logger.ProgressInfo("Bundle fast-start: grabbed '{0}' for {1} of {2} requested episodes of {3} ({4} ms in total)",
-                remoteEpisode.Release.Title,
-                covered.Count,
-                requested.Count,
-                series.Title,
-                total.ElapsedMilliseconds);
-
-            return new BundleFastStartResult
+            foreach (var episode in taken)
             {
-                CoveredEpisodeIds = covered,
-                Grabbed = 1
-            };
+                session.Sources[episode.Id] = candidate;
+
+                if (previous.TryGetValue(episode.Id, out var oldDownloadId) &&
+                    oldDownloadId.IsNotNullOrWhiteSpace() &&
+                    !oldDownloadId.Equals(downloadId, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!superseded.TryGetValue(oldDownloadId, out var moved))
+                    {
+                        moved = new List<int>();
+                        superseded[oldDownloadId] = moved;
+                    }
+
+                    moved.Add(episode.Id);
+                }
+            }
+
+            _logger.ProgressInfo("Tiered grab: '{0}' ({1} seeders) is now the source for {2} episode(s): {3}",
+                remoteEpisode.Release.Title,
+                TorrentInfo.GetSeeders(remoteEpisode.Release)?.ToString() ?? "unknown",
+                taken.Count,
+                string.Join(", ", taken.Select(e => $"{e.SeasonNumber}x{e.EpisodeNumber:00}")));
+
+            foreach (var (oldDownloadId, episodeIds) in superseded)
+            {
+                _logger.Info("Tiered grab: {0} episode(s) moved away from {1}", episodeIds.Count, oldDownloadId);
+                _retirementService.Supersede(oldDownloadId, episodeIds);
+            }
         }
 
         private IDownloadClient GetDownloadClient(RemoteEpisode remoteEpisode)

@@ -188,6 +188,20 @@ namespace NzbDrone.Core.History
                     history.Data.Add(EpisodeHistory.BUNDLE_SELECTION, "true");
                     history.Data.Add("BundleSelectedFiles", message.Episode.BundleSelection.SelectedFiles.Count.ToString());
                     history.Data.Add("BundleTotalFiles", message.Episode.BundleSelection.Files.Count.ToString());
+
+                    // Tiered grab: the file this episode is downloaded from (see GET /api/v3/faststart/sources)
+                    var file = message.Episode.BundleSelection.SelectedFiles.FirstOrDefault(f => f.EpisodeIds.Contains(episode.Id));
+
+                    if (file != null)
+                    {
+                        history.Data.Add(Download.Bundles.FastStartSourceService.FileIndexKey, (file.ClientIndex ?? file.Index).ToString());
+                        history.Data.Add(Download.Bundles.FastStartSourceService.FilePathKey, file.Path);
+                    }
+                }
+
+                if (message.Episode.FastStartGrab)
+                {
+                    history.Data.Add(Download.Bundles.FastStartSourceService.FastStartKey, "true");
                 }
 
                 _historyRepository.Insert(history);

@@ -36,6 +36,7 @@ namespace NzbDrone.Core.Download
         private readonly IEpisodeService _episodeService;
         private readonly IMediaFileService _mediaFileService;
         private readonly IRejectedImportService _rejectedImportService;
+        private readonly Bundles.IFastStartSourceService _fastStartSourceService;
         private readonly Logger _logger;
 
         public CompletedDownloadService(IEventAggregator eventAggregator,
@@ -48,8 +49,10 @@ namespace NzbDrone.Core.Download
                                         IEpisodeService episodeService,
                                         IMediaFileService mediaFileService,
                                         IRejectedImportService rejectedImportService,
+                                        Bundles.IFastStartSourceService fastStartSourceService,
                                         Logger logger)
         {
+            _fastStartSourceService = fastStartSourceService;
             _eventAggregator = eventAggregator;
             _historyService = historyService;
             _provideImportItemService = provideImportItemService;
@@ -220,6 +223,17 @@ namespace NzbDrone.Core.Download
                 // Files may already have been imported one by one while the torrent was still downloading
                 importedEpisodeIds.UnionWith(historyItems.Where(h => h.EventType == EpisodeHistoryEventType.DownloadFolderImported)
                                                          .Select(h => h.EpisodeId));
+
+                // Tiered grab: episodes taken over by another torrent, or that already have a file from any source,
+                // don't block completion (their files may have been switched off in this torrent)
+                importedEpisodeIds.UnionWith(_fastStartSourceService.GetSupersededEpisodeIds(trackedDownload.DownloadItem.DownloadId) ?? new HashSet<int>());
+
+                var missing = expectedEpisodeIds.Where(id => !importedEpisodeIds.Contains(id)).ToList();
+
+                if (missing.Any())
+                {
+                    importedEpisodeIds.UnionWith(_episodeService.GetEpisodes(missing).Where(e => e.HasFile).Select(e => e.Id));
+                }
 
                 allEpisodesImported = expectedEpisodeIds.All(importedEpisodeIds.Contains);
             }

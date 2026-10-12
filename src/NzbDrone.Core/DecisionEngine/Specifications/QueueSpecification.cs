@@ -1,8 +1,10 @@
 using System.Linq;
 using NLog;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.CustomFormats;
 using NzbDrone.Core.Download.TrackedDownloads;
+using NzbDrone.Core.History;
 using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.Qualities;
@@ -16,23 +18,32 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
         private readonly UpgradableSpecification _upgradableSpecification;
         private readonly ICustomFormatCalculationService _formatService;
         private readonly IConfigService _configService;
+        private readonly IHistoryService _historyService;
         private readonly Logger _logger;
 
         public QueueSpecification(IQueueService queueService,
                                   UpgradableSpecification upgradableSpecification,
                                   ICustomFormatCalculationService formatService,
                                   IConfigService configService,
+                                  IHistoryService historyService,
                                   Logger logger)
         {
             _queueService = queueService;
             _upgradableSpecification = upgradableSpecification;
             _formatService = formatService;
             _configService = configService;
+            _historyService = historyService;
             _logger = logger;
         }
 
         public SpecificationPriority Priority => SpecificationPriority.Default;
         public RejectionType Type => RejectionType.Permanent;
+
+        private bool IsFastStartDownload(string downloadId)
+        {
+            return downloadId.IsNotNullOrWhiteSpace() &&
+                   _historyService.FindByDownloadId(downloadId).Any(Download.Bundles.FastStartSourceService.IsFastStartGrab);
+        }
 
         public DownloadSpecDecision IsSatisfiedBy(RemoteEpisode subject, SearchCriteriaBase searchCriteria)
         {
@@ -44,6 +55,13 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
 
             foreach (var queueItem in matchingEpisode)
             {
+                // Tiered grab: a fast-start search replaces fast-start downloads per episode by its own ranking
+                // (any better ranking, including only more seeders), so their queue entries don't block it
+                if (searchCriteria != null && searchCriteria.IsBundleFastStart && IsFastStartDownload(queueItem.DownloadId))
+                {
+                    continue;
+                }
+
                 var remoteEpisode = queueItem.RemoteEpisode;
                 var qualityProfile = subject.Series.QualityProfile.Value;
 

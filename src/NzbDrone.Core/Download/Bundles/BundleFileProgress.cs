@@ -8,6 +8,9 @@ namespace NzbDrone.Core.Download.Bundles
     public interface IProvideBundleFileProgress
     {
         List<BundleFileProgress> GetBundleFileProgress(DownloadClientItem item);
+
+        // Tiered grab: switch files on/off (0 = do not download, 1 = normal, 7 = maximal)
+        void SetFilePriority(DownloadClientItem item, IEnumerable<int> fileIndexes, int priority);
     }
 
     public class BundleFileProgress

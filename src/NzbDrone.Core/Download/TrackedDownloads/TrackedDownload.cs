@@ -22,6 +22,9 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         // Bundle fast-start: only some files of a bundle were selected, the episodes come from the grab history
         public bool IsBundleSelection { get; set; }
 
+        // Tiered grab: grabbed by a fast-start search (sources can move away from it; it can be retired)
+        public bool IsFastStart { get; set; }
+
         public TrackedDownload()
         {
             StatusMessages = Array.Empty<TrackedDownloadStatusMessage>();

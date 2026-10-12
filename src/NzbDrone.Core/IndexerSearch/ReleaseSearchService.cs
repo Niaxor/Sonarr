@@ -25,6 +25,10 @@ namespace NzbDrone.Core.IndexerSearch
         Task<List<DownloadDecision>> SeasonSearch(int seriesId, int seasonNumber, bool missingOnly, bool monitoredOnly, bool userInvokedSearch, bool interactiveSearch);
         Task<List<DownloadDecision>> SeasonSearch(int seriesId, int seasonNumber, List<Episode> episodes, bool monitoredOnly, bool userInvokedSearch, bool interactiveSearch);
         Task<List<DownloadDecision>> BundleFastStartSearch(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch);
+
+        // Tiered grab: the bundle, season and first episode tiers together, then the normal per-episode search. Every
+        // batch of decisions is passed to onResults as soon as it is graded; nothing stops early.
+        Task TieredSearch(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch, Func<List<DownloadDecision>, Task> onResults);
     }
 
     public class ReleaseSearchService : ISearchForReleases
@@ -179,6 +183,47 @@ namespace NzbDrone.Core.IndexerSearch
             return DeDupeDecisions(downloadDecisions);
         }
 
+        public async Task TieredSearch(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch, Func<List<DownloadDecision>, Task> onResults)
+        {
+            var ordered = requestedEpisodes.OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).ToList();
+            var firstEpisode = ordered.First();
+
+            async Task Run(Task<List<DownloadDecision>> search)
+            {
+                await onResults(DeDupeDecisions(await search));
+            }
+
+            await Task.WhenAll(
+                Run(SearchBundleTier(series, requestedEpisodes, userInvokedSearch)),
+                Run(SearchSeasonTier(series, requestedEpisodes, firstEpisode, userInvokedSearch)),
+                Run(SearchFirstEpisodeTier(series, requestedEpisodes, firstEpisode, userInvokedSearch)));
+
+            // The normal search, to the end (decision 3)
+            if (series.SeriesType == SeriesTypes.Anime)
+            {
+                foreach (var episode in ordered.Skip(1))
+                {
+                    await Run(SearchFirstEpisodeTier(series, requestedEpisodes, episode, userInvokedSearch));
+                }
+
+                return;
+            }
+
+            foreach (var season in ordered.GroupBy(e => e.SeasonNumber).Where(g => g.Key != firstEpisode.SeasonNumber))
+            {
+                var seasonEpisodes = season.ToList();
+
+                if (seasonEpisodes.Count == 1)
+                {
+                    await Run(SearchFirstEpisodeTier(series, requestedEpisodes, seasonEpisodes[0], userInvokedSearch));
+                }
+                else
+                {
+                    await Run(SearchSeasonEpisodes(series, requestedEpisodes, seasonEpisodes, userInvokedSearch));
+                }
+            }
+        }
+
         private async Task<List<DownloadDecision>> SearchBundleTier(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch)
         {
             var spec = Get<BundleSearchCriteria>(series, requestedEpisodes, true, userInvokedSearch, false);
@@ -209,8 +254,12 @@ namespace NzbDrone.Core.IndexerSearch
                 return await SearchBundleQuery(series, requestedEpisodes, BundleSearchCriteria.BuildSeasonQuery(series, seasonNumber), "Season pack", userInvokedSearch);
             }
 
+            return await SearchSeasonEpisodes(series, requestedEpisodes, requestedEpisodes.Where(e => e.SeasonNumber == firstEpisode.SeasonNumber).ToList(), userInvokedSearch);
+        }
+
+        private async Task<List<DownloadDecision>> SearchSeasonEpisodes(Series series, List<Episode> requestedEpisodes, List<Episode> seasonEpisodes, bool userInvokedSearch)
+        {
             var decisions = new List<DownloadDecision>();
-            var seasonEpisodes = requestedEpisodes.Where(e => e.SeasonNumber == firstEpisode.SeasonNumber).ToList();
 
             foreach (var mapping in GetSceneSeasonMappings(series, seasonEpisodes))
             {

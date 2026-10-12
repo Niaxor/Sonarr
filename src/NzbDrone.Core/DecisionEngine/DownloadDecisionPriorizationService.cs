@@ -12,6 +12,9 @@ namespace NzbDrone.Core.DecisionEngine
 
         // Bundle fast-start ordering, see DownloadDecisionComparer
         List<DownloadDecision> PrioritizeBundleDecisions(List<DownloadDecision> decisions);
+
+        // Bundle fast-start ordering of two decisions: > 0 when x ranks better than y
+        int CompareBundleDecisions(DownloadDecision x, DownloadDecision y);
     }
 
     public class DownloadDecisionPriorizationService : IPrioritizeDownloadDecision
@@ -25,6 +28,11 @@ namespace NzbDrone.Core.DecisionEngine
             _configService = configService;
             _delayProfileService = delayProfileService;
             _qualityDefinitionService = qualityDefinitionService;
+        }
+
+        public int CompareBundleDecisions(DownloadDecision x, DownloadDecision y)
+        {
+            return new DownloadDecisionComparer(_configService, _delayProfileService, _qualityDefinitionService, true).Compare(x, y);
         }
 
         public List<DownloadDecision> PrioritizeBundleDecisions(List<DownloadDecision> decisions)

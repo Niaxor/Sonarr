@@ -35,6 +35,9 @@ namespace NzbDrone.Core.Parser.Model
 
         public bool IsNarrowedBundle => BundleEpisodes != null;
 
+        // Tiered grab: grabbed by a fast-start search session (eligible for source replacement and retirement)
+        public bool FastStartGrab { get; set; }
+
         public RemoteEpisode()
         {
             Episodes = new List<Episode>();

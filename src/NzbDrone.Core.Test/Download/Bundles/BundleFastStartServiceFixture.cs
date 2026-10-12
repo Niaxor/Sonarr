@@ -32,6 +32,8 @@ namespace NzbDrone.Core.Test.Download.Bundles
         private byte[] _torrent;
         private RemoteEpisode _grabbed;
         private int? _grabbedClientId;
+        private List<List<DownloadDecision>> _batches;
+        private List<(RemoteEpisode Remote, List<int> EpisodeIds)> _grabs;
 
         [SetUp]
         public void Setup()
@@ -40,6 +42,8 @@ namespace NzbDrone.Core.Test.Download.Bundles
             _episodes = BundleTestData.NarutoEpisodes();
             _season1 = _episodes.Where(e => e.SeasonNumber == 1).ToList();
             _decisions = new List<DownloadDecision>();
+            _batches = new List<List<DownloadDecision>>();
+            _grabs = new List<(RemoteEpisode, List<int>)>();
 
             _torrent = BundleTestData.BuildTorrent("[Anime Time] Naruto Complete (001-220 + Movies)",
                 Enumerable.Range(1, 220).Select(a => ($"Episodes/[Anime Time] Naruto - {a:000} [BD][1080p].mkv", 500_000_000L))
@@ -56,9 +60,16 @@ namespace NzbDrone.Core.Test.Download.Bundles
                 .Setup(s => s.GetDownloadClient(DownloadProtocol.Torrent, It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<HashSet<int>>()))
                 .Returns(_qbittorrent);
 
+            // Each batch is one tier/search result set; by default a single batch with every release
             Mocker.GetMock<ISearchForReleases>()
-                .Setup(s => s.BundleFastStartSearch(_series, It.IsAny<List<Episode>>(), It.IsAny<bool>()))
-                .Returns(() => Task.FromResult(_decisions));
+                .Setup(s => s.TieredSearch(_series, It.IsAny<List<Episode>>(), It.IsAny<bool>(), It.IsAny<Func<List<DownloadDecision>, Task>>()))
+                .Returns<Series, List<Episode>, bool, Func<List<DownloadDecision>, Task>>(async (series, episodes, user, onResults) =>
+                {
+                    foreach (var batch in _batches.Any() ? _batches : new List<List<DownloadDecision>> { _decisions })
+                    {
+                        await onResults(batch);
+                    }
+                });
 
             Mocker.GetMock<IPrioritizeDownloadDecision>()
                 .Setup(s => s.PrioritizeBundleDecisions(It.IsAny<List<DownloadDecision>>()))
@@ -78,6 +89,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
                 {
                     _grabbed = r;
                     _grabbedClientId = id;
+                    _grabs.Add((r, r.Episodes.Select(e => e.Id).ToList()));
                 })
                 .Returns(Task.CompletedTask);
         }
@@ -93,6 +105,8 @@ namespace NzbDrone.Core.Test.Download.Bundles
                 Release = new TorrentInfo
                 {
                     Title = title,
+                    Guid = title,
+                    InfoHash = "HASH-" + title.GetHashCode().ToString("X"),
                     DownloadUrl = "http://prowlarr.invalid/1/download?file=1",
                     DownloadProtocol = DownloadProtocol.Torrent,
                     Seeders = 50,
@@ -185,7 +199,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
             await Subject.SearchAndGrab(_series, _season1, true, false);
 
             Mocker.GetMock<ISearchForReleases>()
-                .Verify(v => v.BundleFastStartSearch(_series, It.Is<List<Episode>>(l => l.Count == 34 && l.First().Id == 2), false), Times.Once());
+                .Verify(v => v.TieredSearch(_series, It.Is<List<Episode>>(l => l.Count == 34 && l.First().Id == 2), false, It.IsAny<Func<List<DownloadDecision>, Task>>()), Times.Once());
         }
 
         private void GivenRealGrading()
@@ -233,7 +247,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
         }
 
         [Test]
-        public async Task healthy_bundle_found_first_should_lose_to_better_graded_first_episode_release()
+        public async Task better_graded_first_episode_release_takes_episode_one_and_the_bundle_the_rest()
         {
             GivenRealGrading();
 
@@ -244,9 +258,11 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            // The best graded release is a single episode: no bundle grab, the normal search takes over
-            result.CoveredEpisodeIds.Should().BeEmpty();
-            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+            result.Grabbed.Should().Be(2);
+            _grabs[0].Remote.Release.Title.Should().Be("[Group] Naruto - 001 [BD 1080p]");
+            _grabs[0].EpisodeIds.Should().Equal(1);
+            _grabs[1].EpisodeIds.Should().NotContain(1);
+            _grabs[1].EpisodeIds.Should().Contain(Enumerable.Range(2, 34));
         }
 
         [Test]
@@ -269,7 +285,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
         }
 
         [Test]
-        public async Task single_episode_winner_should_never_early_stop()
+        public async Task searching_never_stops_early_and_single_episode_winner_takes_only_its_episode()
         {
             GivenRealGrading();
 
@@ -278,13 +294,16 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
-            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+            result.SearchCompleted.Should().BeTrue();
+            _grabs.Should().HaveCount(2);
+            _grabs[0].EpisodeIds.Should().Equal(1);
+            _grabs[1].EpisodeIds.Should().NotContain(1);
         }
 
         [TestCase(5)]
+        [TestCase(5)]
         [TestCase(19)]
-        public async Task unhealthy_pack_winner_should_never_early_stop(int seeders)
+        public async Task pack_below_the_healthy_threshold_is_still_grabbed_when_it_ranks_best(int seeders)
         {
             GivenRealGrading();
 
@@ -293,19 +312,19 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
-            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+            result.Grabbed.Should().Be(1);
+            _grabbed.Release.Title.Should().Be("[Group] Naruto S01 [BD 1080p]");
         }
 
         [Test]
-        public async Task should_not_early_stop_when_pack_seeders_are_unknown()
+        public async Task pack_with_unknown_seeders_is_grabbed_when_it_ranks_best()
         {
             GivenAnimeTimeBundle();
             ((TorrentInfo)_decisions.Single().RemoteEpisode.Release).Seeders = null;
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
+            result.Grabbed.Should().Be(1);
         }
 
         [Test]
@@ -334,7 +353,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
+            result.Grabbed.Should().Be(0);
             Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
         }
 
@@ -361,15 +380,81 @@ namespace NzbDrone.Core.Test.Download.Bundles
         }
 
         [Test]
-        public async Task should_not_grab_when_a_single_episode_ranks_best()
+        public async Task single_episode_ranking_first_takes_episode_one_and_bundle_the_rest()
         {
             GivenRelease("[Erai-raws] Naruto - 001 [1080p][Multiple Subtitle]", new List<Episode> { _season1[0] });
             GivenAnimeTimeBundle();
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
-            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+            result.Grabbed.Should().Be(2);
+            _grabs[1].Remote.BundleSelection.SelectedFiles.Should().HaveCount(34);
+            _grabs[1].EpisodeIds.Should().NotContain(_season1[0].Id);
+        }
+
+        [Test]
+        public async Task later_better_result_replaces_the_source_of_the_episodes_it_covers()
+        {
+            // Slime order of arrival: E01 single first (25 seeders), then the Judas batch (99 seeders, better quality)
+            GivenRealGrading();
+
+            var single = GivenGradedRelease("[Erai-raws] Naruto - 001 [1080p]", _season1.Take(1).ToList(), 25);
+            var judas = GivenGradedRelease("[Judas] Naruto (Season 1 + OADs) [BD 1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs] (Batch)", _season1.ToList(), 99);
+
+            _batches.Add(new List<DownloadDecision> { single });
+            _batches.Add(new List<DownloadDecision> { judas });
+
+            // The first grab made the single the source of episode 1
+            Mocker.GetMock<IFastStartSourceService>()
+                .Setup(s => s.GetSourcesForSeries(_series.Id))
+                .Returns(() => _grabs.Count == 0
+                    ? new List<FastStartSource>()
+                    : new List<FastStartSource> { new FastStartSource { EpisodeId = 1, DownloadId = "SINGLEHASH" } });
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.Grabbed.Should().Be(2);
+            _grabs[1].Remote.Release.Title.Should().StartWith("[Judas]");
+            _grabs[1].EpisodeIds.Should().Contain(1);
+
+            Mocker.GetMock<IFastStartRetirementService>()
+                .Verify(v => v.Supersede("SINGLEHASH", It.Is<IEnumerable<int>>(ids => ids.SequenceEqual(new[] { 1 }))), Times.Once());
+        }
+
+        [Test]
+        public async Task equal_or_worse_later_result_does_not_replace_the_source()
+        {
+            GivenRealGrading();
+
+            var judas = GivenGradedRelease("[Judas] Naruto (Season 1 + OADs) [BD 1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs] (Batch)", _season1.ToList(), 99);
+            var single = GivenGradedRelease("[Erai-raws] Naruto - 001 [1080p]", _season1.Take(1).ToList(), 25);
+
+            _batches.Add(new List<DownloadDecision> { judas });
+            _batches.Add(new List<DownloadDecision> { single });
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.Grabbed.Should().Be(1);
+            Mocker.GetMock<IFastStartRetirementService>()
+                .Verify(v => v.Supersede(It.IsAny<string>(), It.IsAny<IEnumerable<int>>()), Times.Never());
+        }
+
+        [Test]
+        public async Task more_seeders_alone_replaces_the_source()
+        {
+            // Decision 4: any better ranking, including only more seeders
+            GivenRealGrading();
+
+            var fewer = GivenGradedRelease("[Group] Naruto S01 [BD 1080p]", _season1.ToList(), 6);
+            var more = GivenGradedRelease("[Other] Naruto S01 [BD 1080p]", _season1.ToList(), 400);
+
+            _batches.Add(new List<DownloadDecision> { fewer });
+            _batches.Add(new List<DownloadDecision> { more });
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.Grabbed.Should().Be(2);
+            _grabs[1].Remote.Release.Title.Should().Be("[Other] Naruto S01 [BD 1080p]");
         }
 
         [Test]
@@ -380,7 +465,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
+            result.Grabbed.Should().Be(0);
             Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
         }
 
@@ -392,7 +477,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
+            result.Grabbed.Should().Be(0);
             Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
         }
 
@@ -405,8 +490,8 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
-            Mocker.GetMock<ISearchForReleases>().Verify(v => v.BundleFastStartSearch(It.IsAny<Series>(), It.IsAny<List<Episode>>(), It.IsAny<bool>()), Times.Never());
+            result.Grabbed.Should().Be(0);
+            Mocker.GetMock<ISearchForReleases>().Verify(v => v.TieredSearch(It.IsAny<Series>(), It.IsAny<List<Episode>>(), It.IsAny<bool>(), It.IsAny<Func<List<DownloadDecision>, Task>>()), Times.Never());
         }
 
         [Test]
@@ -423,7 +508,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
+            result.Grabbed.Should().Be(0);
             Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
         }
 
@@ -455,7 +540,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
             var result = await Subject.SearchAndGrab(_series, allEpisodes, true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
+            result.Grabbed.Should().Be(0);
             Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
         }
 
@@ -508,8 +593,8 @@ namespace NzbDrone.Core.Test.Download.Bundles
         {
             var result = await Subject.SearchAndGrab(_series, _season1.Take(1).ToList(), true, false);
 
-            result.CoveredEpisodeIds.Should().BeEmpty();
-            Mocker.GetMock<ISearchForReleases>().Verify(v => v.BundleFastStartSearch(It.IsAny<Series>(), It.IsAny<List<Episode>>(), It.IsAny<bool>()), Times.Never());
+            result.Grabbed.Should().Be(0);
+            Mocker.GetMock<ISearchForReleases>().Verify(v => v.TieredSearch(It.IsAny<Series>(), It.IsAny<List<Episode>>(), It.IsAny<bool>(), It.IsAny<Func<List<DownloadDecision>, Task>>()), Times.Never());
         }
 
         [Test]
@@ -523,7 +608,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
 
                 var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
-                result.CoveredEpisodeIds.Should().BeEmpty();
+                result.Grabbed.Should().Be(0);
             }
             finally
             {

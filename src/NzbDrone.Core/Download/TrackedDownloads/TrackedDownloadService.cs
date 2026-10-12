@@ -6,6 +6,7 @@ using NzbDrone.Common.Cache;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.CustomFormats;
 using NzbDrone.Core.Download.Aggregation;
+using NzbDrone.Core.Download.Bundles;
 using NzbDrone.Core.Download.History;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Messaging.Events;
@@ -37,6 +38,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         private readonly IDownloadHistoryService _downloadHistoryService;
         private readonly IRemoteEpisodeAggregationService _aggregationService;
         private readonly ICustomFormatCalculationService _formatCalculator;
+        private readonly IFastStartSourceService _fastStartSourceService;
         private readonly Logger _logger;
         private readonly ICached<TrackedDownload> _cache;
 
@@ -47,8 +49,10 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                                       IEventAggregator eventAggregator,
                                       IDownloadHistoryService downloadHistoryService,
                                       IRemoteEpisodeAggregationService aggregationService,
+                                      IFastStartSourceService fastStartSourceService,
                                       Logger logger)
         {
+            _fastStartSourceService = fastStartSourceService;
             _parsingService = parsingService;
             _historyService = historyService;
             _formatCalculator = formatCalculator;
@@ -137,6 +141,8 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
                     trackedDownload.Indexer = grabbedEvent?.Data?.GetValueOrDefault("indexer");
                     trackedDownload.Added = grabbedEvent?.Date;
+
+                    trackedDownload.IsFastStart = historyItems.Any(FastStartSourceService.IsFastStartGrab);
 
                     if (grabbedEvent != null && grabbedEvent.IsBundleSelectionGrab())
                     {
@@ -273,6 +279,14 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             // Only the latest grab: one grab writes its entries within moments, an earlier grab of the same bundle
             // (another season) was minutes or days before
             var grabbedHistory = allGrabs.Where(h => h.Date >= latestGrab.Date - TimeSpan.FromMinutes(1)).ToList();
+
+            // Tiered grab: leave out episodes that a later grab of another torrent took over
+            var superseded = _fastStartSourceService.GetSupersededEpisodeIds(latestGrab.DownloadId) ?? new HashSet<int>();
+
+            if (grabbedHistory.Any(h => !superseded.Contains(h.EpisodeId)))
+            {
+                grabbedHistory = grabbedHistory.Where(h => !superseded.Contains(h.EpisodeId)).ToList();
+            }
 
             parsedEpisodeInfo ??= Parser.Parser.ParseTitle(latestGrab.SourceTitle) ?? new ParsedEpisodeInfo
             {

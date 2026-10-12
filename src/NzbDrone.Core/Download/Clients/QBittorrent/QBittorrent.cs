@@ -228,6 +228,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             {
                 var clientFiles = GetBundleTorrentFiles(lowerHash);
                 var unselected = GetUnselectedFileIndexes(selection, clientFiles, out var selectedCount);
+                SetClientIndexes(selection, clientFiles);
 
                 if (selectedCount == 0)
                 {
@@ -321,6 +322,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
 
             var clientFiles = GetBundleTorrentFiles(lowerHash);
             var selectedIndexes = GetFileIndexes(selection.SelectedFiles.Select(f => f.Path).ToList(), clientFiles);
+            SetClientIndexes(selection, clientFiles);
             var priorityIndexes = GetFileIndexes(selection.PriorityFilePaths, clientFiles);
 
             if (selectedIndexes.Empty())
@@ -390,6 +392,29 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
 
             throw new DownloadClientException("qBittorrent did not return the file list of the bundle torrent");
+        }
+
+        public void SetFilePriority(DownloadClientItem item, IEnumerable<int> fileIndexes, int priority)
+        {
+            var indexes = fileIndexes.ToList();
+
+            if (indexes.Any())
+            {
+                Proxy.SetFilePriority(item.DownloadId.ToLower(), indexes, priority, Settings);
+            }
+        }
+
+        private static void SetClientIndexes(BundleFileSelection selection, List<QBittorrentTorrentFile> clientFiles)
+        {
+            foreach (var file in selection.SelectedFiles)
+            {
+                var index = GetFileIndexes(new List<string> { file.Path }, clientFiles);
+
+                if (index.Count == 1)
+                {
+                    file.ClientIndex = index[0];
+                }
+            }
         }
 
         public List<BundleFileProgress> GetBundleFileProgress(DownloadClientItem item)

@@ -32,6 +32,15 @@ namespace NzbDrone.Core.Download.Bundles
                 .ToList();
         }
 
+        // Approved releases containing any of the episodes, without bundles below the minimum seeders
+        public static List<DownloadDecision> GetCandidatesForEpisodes(IEnumerable<DownloadDecision> decisions, HashSet<int> episodeIds)
+        {
+            return decisions
+                .Where(d => d.Approved && d.RemoteEpisode.Episodes.Any(e => episodeIds.Contains(e.Id)))
+                .Where(d => !(IsBundle(d.RemoteEpisode) && IsBelowMinimum(d.RemoteEpisode)))
+                .ToList();
+        }
+
         public static bool IsBundle(RemoteEpisode remoteEpisode)
         {
             return remoteEpisode.IsNarrowedBundle || remoteEpisode.Episodes.Count > 1;

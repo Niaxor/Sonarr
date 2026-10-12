@@ -44,6 +44,9 @@ namespace NzbDrone.Core.Download.Bundles
 
         public int Index { get; set; }
 
+        // The file's index in the download client, once added (qBittorrent torrents/files "index")
+        public int? ClientIndex { get; set; }
+
         // Path inside the torrent, '/' separated, without the torrent root folder name
         public string Path { get; set; }
         public long Length { get; set; }

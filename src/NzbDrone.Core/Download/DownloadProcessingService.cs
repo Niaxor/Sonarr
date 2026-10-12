@@ -17,6 +17,7 @@ namespace NzbDrone.Core.Download
         private readonly ITrackedDownloadService _trackedDownloadService;
         private readonly IEventAggregator _eventAggregator;
         private readonly IBundleProgressiveImportService _bundleProgressiveImportService;
+        private readonly IFastStartRetirementService _fastStartRetirementService;
         private readonly Logger _logger;
 
         public DownloadProcessingService(IConfigService configService,
@@ -25,8 +26,10 @@ namespace NzbDrone.Core.Download
                                          ITrackedDownloadService trackedDownloadService,
                                          IEventAggregator eventAggregator,
                                          IBundleProgressiveImportService bundleProgressiveImportService,
+                                         IFastStartRetirementService fastStartRetirementService,
                                          Logger logger)
         {
+            _fastStartRetirementService = fastStartRetirementService;
             _configService = configService;
             _completedDownloadService = completedDownloadService;
             _failedDownloadService = failedDownloadService;
@@ -76,6 +79,12 @@ namespace NzbDrone.Core.Download
                     if (enableCompletedDownloadHandling && trackedDownload.IsBundleSelection && trackedDownload.State == TrackedDownloadState.Downloading)
                     {
                         _bundleProgressiveImportService.ImportCompletedFiles(trackedDownload);
+                    }
+
+                    // Tiered grab: retire fast-start torrents that are the best source for no episode
+                    if (trackedDownload.IsFastStart)
+                    {
+                        _fastStartRetirementService.Check(trackedDownload);
                     }
                 }
                 catch (Exception e)
