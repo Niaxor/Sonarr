@@ -94,7 +94,9 @@ namespace NzbDrone.Core.Test.Download.Bundles
                 {
                     Title = title,
                     DownloadUrl = "http://prowlarr.invalid/1/download?file=1",
-                    DownloadProtocol = DownloadProtocol.Torrent
+                    DownloadProtocol = DownloadProtocol.Torrent,
+                    Seeders = 50,
+                    Peers = 50
                 }
             };
 
@@ -248,6 +250,65 @@ namespace NzbDrone.Core.Test.Download.Bundles
         }
 
         [Test]
+        public async Task slime_sequence_should_grab_the_well_seeded_batch_and_skip_the_episode_searches()
+        {
+            // Complete: dead HorribleSubs pack; Season query: nothing; E01: 25 seeder single episode; Batch: Judas, 99 seeders
+            GivenRealGrading();
+
+            GivenGradedRelease("[HorribleSubs] Naruto - Complete 001-035 [1080p]", _season1.ToList(), 3);
+            GivenGradedRelease("[Erai-raws] Naruto - 001 [1080p]", _season1.Take(1).ToList(), 25);
+            GivenGradedRelease("[Judas] Naruto (Season 1 + OADs) [BD 1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs] (Batch)", _season1.ToList(), 99);
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.Grabbed.Should().Be(1);
+            _grabbed.Release.Title.Should().StartWith("[Judas]");
+
+            // Every requested episode is covered, so the caller skips the remaining per-episode searches
+            result.CoveredEpisodeIds.Should().BeEquivalentTo(_season1.Select(e => e.Id));
+        }
+
+        [Test]
+        public async Task single_episode_winner_should_never_early_stop()
+        {
+            GivenRealGrading();
+
+            GivenGradedRelease("[Group] Naruto S01 [HDTV 1080p]", _season1.ToList(), 99);
+            GivenGradedRelease("[Group] Naruto - 001 [BD 1080p]", _season1.Take(1).ToList(), 500);
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.CoveredEpisodeIds.Should().BeEmpty();
+            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+        }
+
+        [TestCase(5)]
+        [TestCase(19)]
+        public async Task unhealthy_pack_winner_should_never_early_stop(int seeders)
+        {
+            GivenRealGrading();
+
+            GivenGradedRelease("[Group] Naruto S01 [BD 1080p]", _season1.ToList(), seeders);
+            GivenGradedRelease("[Group] Naruto - 001 [HDTV 1080p]", _season1.Take(1).ToList(), 300);
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.CoveredEpisodeIds.Should().BeEmpty();
+            Mocker.GetMock<IDownloadService>().Verify(v => v.DownloadReport(It.IsAny<RemoteEpisode>(), It.IsAny<int?>()), Times.Never());
+        }
+
+        [Test]
+        public async Task should_not_early_stop_when_pack_seeders_are_unknown()
+        {
+            GivenAnimeTimeBundle();
+            ((TorrentInfo)_decisions.Single().RemoteEpisode.Release).Seeders = null;
+
+            var result = await Subject.SearchAndGrab(_series, _season1, true, false);
+
+            result.CoveredEpisodeIds.Should().BeEmpty();
+        }
+
+        [Test]
         public async Task should_ignore_poorly_seeded_bundle_and_grab_the_well_seeded_one()
         {
             // Slime: 3 seeder "Complete" pack ranked first, 94 seeder batch second
@@ -278,7 +339,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
         }
 
         [Test]
-        public async Task should_use_configured_minimum_seeders()
+        public async Task should_use_configured_seeder_thresholds()
         {
             GivenAnimeTimeBundle();
             ((TorrentInfo)_decisions.Single().RemoteEpisode.Release).Seeders = 4;
@@ -286,6 +347,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
             try
             {
                 Environment.SetEnvironmentVariable(BundleSeeders.MinimumEnvironmentVariable, "2");
+                Environment.SetEnvironmentVariable(BundleSeeders.HealthyEnvironmentVariable, "3");
 
                 var result = await Subject.SearchAndGrab(_series, _season1, true, false);
 
@@ -294,6 +356,7 @@ namespace NzbDrone.Core.Test.Download.Bundles
             finally
             {
                 Environment.SetEnvironmentVariable(BundleSeeders.MinimumEnvironmentVariable, null);
+                Environment.SetEnvironmentVariable(BundleSeeders.HealthyEnvironmentVariable, null);
             }
         }
 

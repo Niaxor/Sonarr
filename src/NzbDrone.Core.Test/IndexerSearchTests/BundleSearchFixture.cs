@@ -136,71 +136,49 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
         }
 
         [Test]
-        public async Task should_always_search_bundle_season_and_first_episode_tiers()
+        public async Task should_always_search_every_bundle_wording_plus_season_and_first_episode_tiers()
         {
             var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
 
             await Subject.BundleFastStartSearch(_anime, season1, false);
 
-            // Nothing found: all three tiers, then the remaining bundle query variants
-            Queries().Should().BeEquivalentTo("Naruto+Complete", "Naruto+Season+1", "E1", "Naruto+Batch", "Naruto+001");
+            Queries().Should().BeEquivalentTo("Naruto+Complete,Naruto+Batch,Naruto+001", "Naruto+Season+1", "E1");
 
             _criteria.Should().OnlyContain(c => c.IsBundleFastStart && c.BundleRequestedEpisodes.Count == 35);
 
             var episode = _criteria.OfType<AnimeEpisodeSearchCriteria>().Single();
             episode.IsSeasonSearch.Should().BeTrue();
             episode.Episodes.Should().ContainSingle(e => e.Id == 1);
-
-            _criteria.OfType<BundleSearchCriteria>().Single(c => c.Tier == "Season pack").EpisodeQueryTitles.Should().Equal("Naruto+Season+1");
         }
 
-        [TestCase(3, 5)]
-        [TestCase(19, 5)]
-        [TestCase(20, 3)]
-        [TestCase(94, 3)]
-        public async Task should_only_skip_bundle_variants_when_the_best_graded_release_is_well_seeded(int seeders, int expectedSearches)
+        [Test]
+        public async Task should_search_bundle_wordings_for_every_title_variant()
         {
-            // Slime: "Complete" found a 3 seeder pack, the 94 seeder pack was only found by "Batch"
-            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
+            Mocker.GetMock<ISceneMappingService>()
+                .Setup(s => s.GetSceneNames(It.IsAny<int>(), It.IsAny<List<int>>(), It.IsAny<List<int>>()))
+                .Returns(new List<string> { "Naruto Alt" });
 
-            GivenBundleQueryResult(Release("[HorribleSubs] Naruto - Complete 01-35 [1080p]", season1, seeders));
+            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
 
             await Subject.BundleFastStartSearch(_anime, season1, false);
 
-            _criteria.Should().HaveCount(expectedSearches);
-            Queries().Should().Contain(new[] { "Naruto+Complete", "Naruto+Season+1", "E1" }, "the tiers are never skipped");
+            _criteria.OfType<BundleSearchCriteria>().Single(c => c.Tier == "Series bundles").EpisodeQueryTitles
+                .Should().Equal("Naruto+Complete", "Naruto+Batch", "Naruto+001", "Naruto+Alt+Complete", "Naruto+Alt+Batch", "Naruto+Alt+001");
         }
 
         [Test]
-        public async Task should_grade_all_tiers_before_skipping_bundle_variants()
+        public async Task should_never_skip_bundle_wordings_whatever_the_other_tiers_find()
         {
-            // A healthy bundle is found, but the grading is done over every tier: the best (here a better seeded
-            // first-episode release) decides; bundle variants are skipped because it is healthy, and nothing is grabbed here
-            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
-
-            GivenBundleQueryResult(Release("[Group] Naruto Complete", season1, 30));
-            GivenFirstEpisodeResult(Release("[Group] Naruto - 01", season1.Take(1).ToList(), 500));
-
-            var decisions = await Subject.BundleFastStartSearch(_anime, season1, false);
-
-            Queries().Should().BeEquivalentTo("Naruto+Complete", "Naruto+Season+1", "E1");
-            decisions.Should().HaveCount(2);
-
-            Mocker.GetMock<IPrioritizeDownloadDecision>()
-                .Verify(v => v.PrioritizeBundleDecisions(It.Is<List<DownloadDecision>>(l => l.Count == 2)), Times.Once());
-        }
-
-        [Test]
-        public async Task should_search_remaining_bundle_variants_when_best_release_is_poorly_seeded()
-        {
+            // Slime: "Complete" only finds a dead pack, E01 finds a well seeded single episode; "Batch" must still run
             var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
 
             GivenBundleQueryResult(Release("[HorribleSubs] Naruto - Complete 01-35 [1080p]", season1, 3));
-            GivenFirstEpisodeResult(Release("[Group] Naruto - 01", season1.Take(1).ToList(), 2));
+            GivenFirstEpisodeResult(Release("[Erai-raws] Naruto - 01 [1080p]", season1.Take(1).ToList(), 25));
 
-            await Subject.BundleFastStartSearch(_anime, season1, false);
+            var decisions = await Subject.BundleFastStartSearch(_anime, season1, false);
 
-            Queries().Should().BeEquivalentTo("Naruto+Complete", "Naruto+Season+1", "E1", "Naruto+Batch", "Naruto+001");
+            Queries().Should().Contain("Naruto+Complete,Naruto+Batch,Naruto+001");
+            decisions.Should().HaveCount(2);
         }
 
         [Test]

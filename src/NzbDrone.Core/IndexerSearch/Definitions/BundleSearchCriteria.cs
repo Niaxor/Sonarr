@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -19,12 +20,17 @@ namespace NzbDrone.Core.IndexerSearch.Definitions
 
         public static string[] BuildQueries(Series series, List<Episode> requestedEpisodes)
         {
-            var title = GetCleanSceneTitle(series.Title);
-            var queries = new List<string> { $"{title}+Complete" };
+            return BuildQueries(series, requestedEpisodes, new[] { GetCleanSceneTitle(series.Title) });
+        }
+
+        // Every bundle wording for every title variant (series title first, then scene/alternate titles)
+        public static string[] BuildQueries(Series series, List<Episode> requestedEpisodes, IEnumerable<string> cleanTitles)
+        {
+            var wordings = new List<string> { "Complete" };
 
             if (series.SeriesType == SeriesTypes.Anime)
             {
-                queries.Add($"{title}+Batch");
+                wordings.Add("Batch");
 
                 var firstAbsolute = requestedEpisodes
                     .Where(e => e.SeasonNumber > 0)
@@ -35,11 +41,16 @@ namespace NzbDrone.Core.IndexerSearch.Definitions
 
                 if (firstAbsolute.HasValue)
                 {
-                    queries.Add($"{title}+{firstAbsolute.Value.ToString("000", CultureInfo.InvariantCulture)}");
+                    wordings.Add(firstAbsolute.Value.ToString("000", CultureInfo.InvariantCulture));
                 }
             }
 
-            return queries.ToArray();
+            var titles = new List<string> { GetCleanSceneTitle(series.Title) };
+            titles.AddRange(cleanTitles);
+
+            return titles.Distinct(StringComparer.InvariantCultureIgnoreCase)
+                         .SelectMany(t => wordings.Select(w => $"{t}+{w}"))
+                         .ToArray();
         }
 
         public override string ToString()

@@ -9,7 +9,6 @@ using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
 using NzbDrone.Core.DataAugmentation.Scene;
 using NzbDrone.Core.DecisionEngine;
-using NzbDrone.Core.Download.Bundles;
 using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.Indexers;
 using NzbDrone.Core.IndexerSearch.Definitions;
@@ -35,7 +34,6 @@ namespace NzbDrone.Core.IndexerSearch
         private readonly ISeriesService _seriesService;
         private readonly IEpisodeService _episodeService;
         private readonly IMakeDownloadDecision _makeDownloadDecision;
-        private readonly IPrioritizeDownloadDecision _prioritizeDownloadDecision;
         private readonly Logger _logger;
 
         public ReleaseSearchService(IIndexerFactory indexerFactory,
@@ -43,10 +41,8 @@ namespace NzbDrone.Core.IndexerSearch
                                 ISeriesService seriesService,
                                 IEpisodeService episodeService,
                                 IMakeDownloadDecision makeDownloadDecision,
-                                IPrioritizeDownloadDecision prioritizeDownloadDecision,
                                 Logger logger)
         {
-            _prioritizeDownloadDecision = prioritizeDownloadDecision;
             _indexerFactory = indexerFactory;
             _sceneMapping = sceneMapping;
             _seriesService = seriesService;
@@ -166,42 +162,31 @@ namespace NzbDrone.Core.IndexerSearch
         public async Task<List<DownloadDecision>> BundleFastStartSearch(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch)
         {
             var firstEpisode = requestedEpisodes.OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).First();
-            var bundleQueries = BundleSearchCriteria.BuildQueries(series, requestedEpisodes);
 
-            // Every tier is always searched and graded: the first bundle query, the season pack query and the query for
-            // the first requested episode. They are dispatched together; per-indexer rate limits still space the
-            // requests to one indexer, but the tiers overlap with each other's decisions and with other indexers.
+            // Top-down like a normal search, broadest first: the bundle tier (every bundle wording for every title variant,
+            // never skipped), the season pack tier and the first requested episode. All three always run and every result
+            // is graded together by the caller. They are dispatched together; per-indexer rate limits still space the
+            // requests to one indexer.
             var tiers = new List<Task<List<DownloadDecision>>>
             {
-                SearchBundleQuery(series, requestedEpisodes, bundleQueries[0], "Series bundles", userInvokedSearch),
+                SearchBundleTier(series, requestedEpisodes, userInvokedSearch),
                 SearchSeasonTier(series, requestedEpisodes, firstEpisode, userInvokedSearch),
                 SearchFirstEpisodeTier(series, requestedEpisodes, firstEpisode, userInvokedSearch)
             };
 
             var downloadDecisions = (await Task.WhenAll(tiers)).SelectMany(d => d).ToList();
 
-            // The remaining bundle query variants ("Batch", "001") are only skipped when the best graded candidate for the
-            // first requested episode, among all tiers, is well seeded
-            var remaining = bundleQueries.Skip(1).ToList();
-
-            if (remaining.Any())
-            {
-                var best = _prioritizeDownloadDecision.PrioritizeBundleDecisions(BundleSeeders.GetCandidates(downloadDecisions, firstEpisode.Id)).FirstOrDefault();
-
-                if (best != null && BundleSeeders.IsHealthy(best.RemoteEpisode))
-                {
-                    _logger.Info("Bundle fast-start: best release so far '{0}' is well seeded, skipping {1}",
-                        best.RemoteEpisode.Release.Title,
-                        string.Join(", ", remaining.Select(q => q.Replace('+', ' '))));
-                }
-                else
-                {
-                    var variants = await Task.WhenAll(remaining.Select(q => SearchBundleQuery(series, requestedEpisodes, q, "Series bundles", userInvokedSearch)));
-                    downloadDecisions.AddRange(variants.SelectMany(d => d));
-                }
-            }
-
             return DeDupeDecisions(downloadDecisions);
+        }
+
+        private async Task<List<DownloadDecision>> SearchBundleTier(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch)
+        {
+            var spec = Get<BundleSearchCriteria>(series, requestedEpisodes, true, userInvokedSearch, false);
+            spec.EpisodeQueryTitles = BundleSearchCriteria.BuildQueries(series, requestedEpisodes, spec.CleanSceneTitles);
+            spec.BundleRequestedEpisodes = requestedEpisodes;
+            spec.Tier = "Series bundles";
+
+            return await Dispatch(indexer => indexer.Fetch(spec), spec);
         }
 
         private async Task<List<DownloadDecision>> SearchBundleQuery(Series series, List<Episode> requestedEpisodes, string query, string tier, bool userInvokedSearch)

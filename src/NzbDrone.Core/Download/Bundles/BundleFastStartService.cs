@@ -182,6 +182,17 @@ namespace NzbDrone.Core.Download.Bundles
                 return BundleFastStartResult.None;
             }
 
+            // Early stop (grab the pack and skip the per-episode searches it covers) only for a well seeded winner
+            if (!BundleSeeders.IsHealthy(remoteEpisode))
+            {
+                _logger.Info("Bundle fast-start: best pack '{0}' has {1} seeders (fewer than {2}), continuing with the normal search",
+                    remoteEpisode.Release.Title,
+                    TorrentInfo.GetSeeders(remoteEpisode.Release)?.ToString() ?? "unknown",
+                    BundleSeeders.Healthy);
+
+                return BundleFastStartResult.None;
+            }
+
             // Series bundles (complete series, batches, multi-season packs) and packs covering more than the request are only
             // grabbed with file selection. A plain season pack that matches the request may still be grabbed as a whole.
             var requiresSelection = remoteEpisode.IsNarrowedBundle ||
