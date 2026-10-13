@@ -71,37 +71,70 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
         }
 
         [Test]
-        public void should_build_anime_bundle_queries()
+        public void should_build_plain_titles_as_written_and_clean_for_anime()
+        {
+            var series = new Series { Title = "Frieren: Beyond Journey's End", SeriesType = SeriesTypes.Anime };
+
+            BundleSearchCriteria.BuildPlainTitles(series, new[] { "Sousou no Frieren", "Frieren: Beyond Journey's End" })
+                .Should().Equal("Frieren:+Beyond+Journey's+End", "Frieren+Beyond+Journeys+End", "Sousou+no+Frieren");
+        }
+
+        [Test]
+        public void should_build_clean_plain_titles_for_standard_series()
+        {
+            var series = new Series { Title = "The Series: Title", SeriesType = SeriesTypes.Standard };
+
+            BundleSearchCriteria.BuildPlainTitles(series, new[] { "Series Title" })
+                .Should().Equal("Series+Title");
+        }
+
+        [Test]
+        public void should_order_anime_keywords_by_yield_and_skip_absolute_number_for_unnumbered_series()
         {
             var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
 
-            BundleSearchCriteria.BuildQueries(_anime, season1)
-                .Should().Equal("Naruto+Complete", "Naruto+Batch", "Naruto+001");
+            BundleSearchCriteria.BuildKeywordWordings(_anime, season1, false)
+                .Should().Equal("Batch", "Season+1", "Complete");
         }
 
         [Test]
-        public void should_use_first_requested_absolute_episode_zero_padded()
+        public void should_add_first_absolute_number_for_numbered_series()
         {
             var season2 = _animeEpisodes.Where(e => e.SeasonNumber == 2).ToList();
 
-            BundleSearchCriteria.BuildQueries(_anime, season2)
-                .Should().Equal("Naruto+Complete", "Naruto+Batch", "Naruto+036");
+            BundleSearchCriteria.BuildKeywordWordings(_anime, season2, true)
+                .Should().Equal("Batch", "Season+2", "Complete", "036");
         }
 
         [Test]
-        public void should_only_query_complete_for_standard_series()
+        public void should_only_use_complete_keyword_for_standard_series()
         {
             var series = new Series { Title = "The Series Title", SeriesType = SeriesTypes.Standard };
             var episodes = new List<Episode> { new Episode { SeasonNumber = 1, EpisodeNumber = 1, AbsoluteEpisodeNumber = 1 } };
 
-            BundleSearchCriteria.BuildQueries(series, episodes)
-                .Should().Equal("Series+Title+Complete");
+            BundleSearchCriteria.BuildKeywordWordings(series, episodes, false)
+                .Should().Equal("Complete");
         }
 
-        private void GivenBundleQueryResult(params DownloadDecision[] decisions)
+        [Test]
+        public void should_interleave_keyword_queries_by_wording()
+        {
+            BundleSearchCriteria.BuildKeywordQueries(new[] { "Sousou+no+Frieren", "Frieren+Beyond+Journeys+End" }, new[] { "Batch", "Season+1" })
+                .Select(q => q.Value)
+                .Should().Equal("Sousou+no+Frieren+Batch", "Frieren+Beyond+Journeys+End+Batch", "Sousou+no+Frieren+Season+1", "Frieren+Beyond+Journeys+End+Season+1");
+        }
+
+        [Test]
+        public void should_treat_series_with_three_digit_absolute_numbers_as_numbered()
+        {
+            BundleSearchCriteria.IsNumberedSeries(_animeEpisodes).Should().BeTrue();
+            BundleSearchCriteria.IsNumberedSeries(_animeEpisodes.Where(e => e.AbsoluteEpisodeNumber < 100)).Should().BeFalse();
+        }
+
+        private void GivenPlainQueryResult(params DownloadDecision[] decisions)
         {
             Mocker.GetMock<IMakeDownloadDecision>()
-                .Setup(s => s.GetSearchDecision(It.IsAny<List<ReleaseInfo>>(), It.Is<SearchCriteriaBase>(c => c is BundleSearchCriteria && ((BundleSearchCriteria)c).Tier == "Series bundles")))
+                .Setup(s => s.GetSearchDecision(It.IsAny<List<ReleaseInfo>>(), It.Is<SearchCriteriaBase>(c => c is BundleSearchCriteria && ((BundleSearchCriteria)c).Tier == BundleSearchCriteria.PlainTitleTier)))
                 .Returns(decisions.ToList());
         }
 
@@ -110,6 +143,17 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
             Mocker.GetMock<IMakeDownloadDecision>()
                 .Setup(s => s.GetSearchDecision(It.IsAny<List<ReleaseInfo>>(), It.Is<SearchCriteriaBase>(c => c is AnimeEpisodeSearchCriteria)))
                 .Returns(decisions.ToList());
+        }
+
+        // The indexer returns this many releases for the plain title queries (a full page means it was cut off)
+        private void GivenPlainQueryReleaseCount(int count)
+        {
+            _mockIndexer.Setup(v => v.Fetch(It.IsAny<SpecialEpisodeSearchCriteria>()))
+                .Callback<SpecialEpisodeSearchCriteria>(s => _criteria.Add(s))
+                .Returns<SpecialEpisodeSearchCriteria>(s => Task.FromResult<IList<ReleaseInfo>>(
+                    ((BundleSearchCriteria)s).Tier == BundleSearchCriteria.PlainTitleTier
+                        ? Enumerable.Range(1, count).Select(i => new ReleaseInfo { Title = $"Release {i}", Guid = $"{s.EpisodeQueryTitles[0]}-{i}" }).ToList()
+                        : new List<ReleaseInfo>()));
         }
 
         private DownloadDecision Release(string title, List<Episode> episodes, int seeders)
@@ -136,13 +180,15 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
         }
 
         [Test]
-        public async Task should_always_search_every_bundle_wording_plus_season_and_first_episode_tiers()
+        public async Task should_search_plain_title_then_first_episode_when_nothing_was_cut_off()
         {
             var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
 
+            GivenPlainQueryReleaseCount(30);
+
             await Subject.BundleFastStartSearch(_anime, season1, false);
 
-            Queries().Should().BeEquivalentTo("Naruto+Complete,Naruto+Batch,Naruto+001", "Naruto+Season+1", "E1");
+            Queries().Should().Equal("Naruto", "E1");
 
             _criteria.Should().OnlyContain(c => c.IsBundleFastStart && c.BundleRequestedEpisodes.Count == 35);
 
@@ -152,10 +198,56 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
         }
 
         [Test]
-        public async Task tiered_search_runs_every_tier_then_every_episode_and_reports_each_batch()
+        public async Task should_run_keyword_backstop_after_plain_title_when_it_was_cut_off()
+        {
+            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
+
+            Mocker.GetMock<IEpisodeService>()
+                .Setup(s => s.GetEpisodeBySeries(_anime.Id))
+                .Returns(_animeEpisodes);
+
+            GivenPlainQueryReleaseCount(75);
+
+            await Subject.BundleFastStartSearch(_anime, season1, false);
+
+            Queries().First().Should().Be("Naruto");
+            Queries().Skip(1).Take(4).Should().BeEquivalentTo("Naruto+Batch", "Naruto+Season+1", "Naruto+Complete", "Naruto+001");
+            Queries().Last().Should().Be("E1");
+            _criteria.OfType<BundleSearchCriteria>().Skip(1).Should().OnlyContain(c => c.Tier == BundleSearchCriteria.KeywordTier && c.QueryTitle == "Naruto");
+        }
+
+        [Test]
+        public async Task should_only_run_keyword_backstop_for_titles_that_were_cut_off()
+        {
+            Mocker.GetMock<ISceneMappingService>()
+                .Setup(s => s.GetSceneNames(It.IsAny<int>(), It.IsAny<List<int>>(), It.IsAny<List<int>>()))
+                .Returns(new List<string> { "Naruto Alt" });
+
+            _mockIndexer.Setup(v => v.Fetch(It.IsAny<SpecialEpisodeSearchCriteria>()))
+                .Callback<SpecialEpisodeSearchCriteria>(s => _criteria.Add(s))
+                .Returns<SpecialEpisodeSearchCriteria>(s => Task.FromResult<IList<ReleaseInfo>>(
+                    s.EpisodeQueryTitles[0] == "Naruto+Alt"
+                        ? Enumerable.Range(1, 75).Select(i => new ReleaseInfo { Title = $"Release {i}", Guid = $"alt-{i}" }).ToList()
+                        : new List<ReleaseInfo>()));
+
+            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
+
+            await Subject.BundleFastStartSearch(_anime, season1, false);
+
+            _criteria.OfType<BundleSearchCriteria>().Where(c => c.Tier == BundleSearchCriteria.PlainTitleTier).Select(c => c.QueryTitle)
+                .Should().Equal("Naruto", "Naruto+Alt");
+
+            _criteria.OfType<BundleSearchCriteria>().Where(c => c.Tier == BundleSearchCriteria.KeywordTier).Select(c => c.EpisodeQueryTitles[0])
+                .Should().BeEquivalentTo("Naruto+Alt+Batch", "Naruto+Alt+Season+1", "Naruto+Alt+Complete");
+        }
+
+        [Test]
+        public async Task tiered_search_reports_each_query_then_every_episode()
         {
             var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
             var batches = 0;
+
+            GivenPlainQueryReleaseCount(10);
 
             await Subject.TieredSearch(_anime, season1, false, decisions =>
             {
@@ -163,44 +255,27 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
                 return Task.CompletedTask;
             });
 
-            // Bundle tier, season tier, episode 1, then episodes 2-35: nothing stops early
-            batches.Should().Be(3 + 34);
+            // Plain title, episode 1, then episodes 2-35: nothing stops early
+            batches.Should().Be(2 + 34);
             _criteria.OfType<AnimeEpisodeSearchCriteria>().Select(c => c.AbsoluteEpisodeNumber).Should().BeEquivalentTo(Enumerable.Range(1, 35));
             _criteria.Should().OnlyContain(c => c.IsBundleFastStart && c.BundleRequestedEpisodes.Count == 35);
         }
 
         [Test]
-        public async Task should_search_bundle_wordings_for_every_title_variant()
+        public async Task should_return_plain_title_and_first_episode_results_together()
         {
-            Mocker.GetMock<ISceneMappingService>()
-                .Setup(s => s.GetSceneNames(It.IsAny<int>(), It.IsAny<List<int>>(), It.IsAny<List<int>>()))
-                .Returns(new List<string> { "Naruto Alt" });
-
             var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
 
-            await Subject.BundleFastStartSearch(_anime, season1, false);
-
-            _criteria.OfType<BundleSearchCriteria>().Single(c => c.Tier == "Series bundles").EpisodeQueryTitles
-                .Should().Equal("Naruto+Complete", "Naruto+Batch", "Naruto+001", "Naruto+Alt+Complete", "Naruto+Alt+Batch", "Naruto+Alt+001");
-        }
-
-        [Test]
-        public async Task should_never_skip_bundle_wordings_whatever_the_other_tiers_find()
-        {
-            // Slime: "Complete" only finds a dead pack, E01 finds a well seeded single episode; "Batch" must still run
-            var season1 = _animeEpisodes.Where(e => e.SeasonNumber == 1).ToList();
-
-            GivenBundleQueryResult(Release("[HorribleSubs] Naruto - Complete 01-35 [1080p]", season1, 3));
+            GivenPlainQueryResult(Release("[Judas] Naruto (Complete Series) [BD 1080p] (Batch)", season1, 147));
             GivenFirstEpisodeResult(Release("[Erai-raws] Naruto - 01 [1080p]", season1.Take(1).ToList(), 25));
 
             var decisions = await Subject.BundleFastStartSearch(_anime, season1, false);
 
-            Queries().Should().Contain("Naruto+Complete,Naruto+Batch,Naruto+001");
             decisions.Should().HaveCount(2);
         }
 
         [Test]
-        public async Task should_search_bundle_season_and_first_episode_for_standard_series()
+        public async Task should_search_plain_title_season_and_first_episode_for_standard_series()
         {
             var series = new Series { Id = 2, Title = "Series Title", SeriesType = SeriesTypes.Standard, Tags = new HashSet<int>() };
             var episodes = Enumerable.Range(1, 10).Select(i => new Episode { Id = i, SeriesId = 2, SeasonNumber = 2, EpisodeNumber = i }).ToList();
@@ -211,7 +286,7 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
 
             await Subject.BundleFastStartSearch(series, episodes, false);
 
-            Queries().Should().BeEquivalentTo("Series+Title+Complete", "S2", "S2E1");
+            Queries().Should().Equal("Series+Title", "S2", "S2E1");
             _criteria.Should().OnlyContain(c => c.IsBundleFastStart);
         }
 

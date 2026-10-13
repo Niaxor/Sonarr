@@ -160,25 +160,21 @@ namespace NzbDrone.Core.IndexerSearch
             return DeDupeDecisions(downloadDecisions);
         }
 
-        // Bundle fast-start: the bundle queries plus the query that covers the first requested episode
-        // (anime: its absolute-number query; standard: its season query). Every decision is made with
-        // BundleRequestedEpisodes set so releases covering more than the request are narrowed instead of rejected.
+        // Bundle fast-start without streaming results: the plain title, keyword backstop and first episode tiers (see
+        // SearchFastStartTiers), every decision returned together.
         public async Task<List<DownloadDecision>> BundleFastStartSearch(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch)
         {
-            var firstEpisode = requestedEpisodes.OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).First();
+            var downloadDecisions = new List<DownloadDecision>();
 
-            // Top-down like a normal search, broadest first: the bundle tier (every bundle wording for every title variant,
-            // never skipped), the season pack tier and the first requested episode. All three always run and every result
-            // is graded together by the caller. They are dispatched together; per-indexer rate limits still space the
-            // requests to one indexer.
-            var tiers = new List<Task<List<DownloadDecision>>>
+            await SearchFastStartTiers(series, requestedEpisodes, userInvokedSearch, decisions =>
             {
-                SearchBundleTier(series, requestedEpisodes, userInvokedSearch),
-                SearchSeasonTier(series, requestedEpisodes, firstEpisode, userInvokedSearch),
-                SearchFirstEpisodeTier(series, requestedEpisodes, firstEpisode, userInvokedSearch)
-            };
+                lock (downloadDecisions)
+                {
+                    downloadDecisions.AddRange(decisions);
+                }
 
-            var downloadDecisions = (await Task.WhenAll(tiers)).SelectMany(d => d).ToList();
+                return Task.CompletedTask;
+            });
 
             return DeDupeDecisions(downloadDecisions);
         }
@@ -188,22 +184,14 @@ namespace NzbDrone.Core.IndexerSearch
             var ordered = requestedEpisodes.OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).ToList();
             var firstEpisode = ordered.First();
 
-            async Task Run(Task<List<DownloadDecision>> search)
-            {
-                await onResults(DeDupeDecisions(await search));
-            }
-
-            await Task.WhenAll(
-                Run(SearchBundleTier(series, requestedEpisodes, userInvokedSearch)),
-                Run(SearchSeasonTier(series, requestedEpisodes, firstEpisode, userInvokedSearch)),
-                Run(SearchFirstEpisodeTier(series, requestedEpisodes, firstEpisode, userInvokedSearch)));
+            await SearchFastStartTiers(series, requestedEpisodes, userInvokedSearch, onResults);
 
             // The normal search, to the end (decision 3)
             if (series.SeriesType == SeriesTypes.Anime)
             {
                 foreach (var episode in ordered.Skip(1))
                 {
-                    await Run(SearchFirstEpisodeTier(series, requestedEpisodes, episode, userInvokedSearch));
+                    await RunDecisions(SearchFirstEpisodeTier(series, requestedEpisodes, episode, userInvokedSearch), onResults);
                 }
 
                 return;
@@ -215,46 +203,103 @@ namespace NzbDrone.Core.IndexerSearch
 
                 if (seasonEpisodes.Count == 1)
                 {
-                    await Run(SearchFirstEpisodeTier(series, requestedEpisodes, seasonEpisodes[0], userInvokedSearch));
+                    await RunDecisions(SearchFirstEpisodeTier(series, requestedEpisodes, seasonEpisodes[0], userInvokedSearch), onResults);
                 }
                 else
                 {
-                    await Run(SearchSeasonEpisodes(series, requestedEpisodes, seasonEpisodes, userInvokedSearch));
+                    await RunDecisions(SearchSeasonEpisodes(series, requestedEpisodes, seasonEpisodes, userInvokedSearch), onResults);
                 }
             }
         }
 
-        private async Task<List<DownloadDecision>> SearchBundleTier(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch)
+        // Bundle fast-start tiers, each query graded (passed to onResults) as soon as it returns:
+        // 1. Plain titles: every title variant on its own, no keyword. With an indexer sorted by seeders (Nyaa) the best
+        //    seeded packs come back first, usually within the first one or two requests.
+        // 2. Keyword backstop, only for titles whose plain query was cut off by the page limit: anime "Batch", "Season N",
+        //    "Complete" (and "001" for numbered series) interleaved across those titles; standard series the normal season
+        //    search plus "Complete".
+        // 3. The first requested episode (the normal search).
+        // Every query is made with BundleRequestedEpisodes set so releases covering more than the request are narrowed
+        // instead of rejected. Queries in a tier are dispatched together; per-indexer rate limits space the requests.
+        private async Task SearchFastStartTiers(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch, Func<List<DownloadDecision>, Task> onResults)
         {
-            var spec = Get<BundleSearchCriteria>(series, requestedEpisodes, true, userInvokedSearch, false);
-            spec.EpisodeQueryTitles = BundleSearchCriteria.BuildQueries(series, requestedEpisodes, spec.CleanSceneTitles);
-            spec.BundleRequestedEpisodes = requestedEpisodes;
-            spec.Tier = "Series bundles";
+            var stopwatch = Stopwatch.StartNew();
+            var firstEpisode = requestedEpisodes.OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).First();
 
-            return await Dispatch(indexer => indexer.Fetch(spec), spec);
+            async Task<BundleSearchCriteria> Run(BundleSearchCriteria spec)
+            {
+                var decisions = await Dispatch(indexer => indexer.Fetch(spec), spec);
+                await onResults(DeDupeDecisions(decisions));
+
+                return spec;
+            }
+
+            // 1. Plain titles
+            var sceneTitles = Get<BundleSearchCriteria>(series, requestedEpisodes, true, userInvokedSearch, false).SceneTitles;
+            var plainTitles = BundleSearchCriteria.BuildPlainTitles(series, sceneTitles);
+
+            var plain = await Task.WhenAll(plainTitles.Select(title => Run(BuildBundleSpec(series, requestedEpisodes, userInvokedSearch, BundleSearchCriteria.PlainTitleTier, title, title))));
+
+            _logger.Info("Bundle fast-start: plain title tier for {0} finished after {1} ms ({2})",
+                series.Title,
+                stopwatch.ElapsedMilliseconds,
+                string.Join(", ", plain.Select(p => $"'{p.QueryTitle.Replace('+', ' ')}': {p.MaxIndexerReleaseCount}{(p.IsTruncated ? " cut off" : string.Empty)}")));
+
+            // 2. Keyword backstop
+            var truncatedTitles = plain.Where(p => p.IsTruncated)
+                                       .OrderByDescending(p => p.MaxIndexerReleaseCount)
+                                       .Select(p => p.QueryTitle)
+                                       .ToList();
+
+            var skippedTitles = plain.Where(p => !p.IsTruncated).Select(p => $"'{p.QueryTitle.Replace('+', ' ')}'").ToList();
+
+            if (skippedTitles.Any())
+            {
+                _logger.Info("Bundle fast-start: no keyword queries for {0} of {1}, their plain query returned fewer than {2} releases so keywords could only find a subset",
+                    string.Join(", ", skippedTitles),
+                    series.Title,
+                    BundleSearchCriteria.TruncatedReleaseCount);
+            }
+
+            var numbered = series.SeriesType == SeriesTypes.Anime &&
+                           (BundleSearchCriteria.IsNumberedSeries(requestedEpisodes) ||
+                            BundleSearchCriteria.IsNumberedSeries(_episodeService.GetEpisodeBySeries(series.Id)));
+
+            var keywordQueries = BundleSearchCriteria.BuildKeywordQueries(truncatedTitles, BundleSearchCriteria.BuildKeywordWordings(series, requestedEpisodes, numbered));
+
+            var backstop = new List<Task>();
+
+            if (series.SeriesType != SeriesTypes.Anime)
+            {
+                var seasonEpisodes = requestedEpisodes.Where(e => e.SeasonNumber == firstEpisode.SeasonNumber).ToList();
+
+                backstop.Add(RunDecisions(SearchSeasonEpisodes(series, requestedEpisodes, seasonEpisodes, userInvokedSearch), onResults));
+            }
+
+            backstop.AddRange(keywordQueries.Select(q => (Task)Run(BuildBundleSpec(series, requestedEpisodes, userInvokedSearch, BundleSearchCriteria.KeywordTier, q.Key, q.Value))));
+
+            await Task.WhenAll(backstop);
+
+            _logger.Info("Bundle fast-start: keyword backstop for {0} finished after {1} ms ({2} queries)", series.Title, stopwatch.ElapsedMilliseconds, backstop.Count);
+
+            // 3. The first requested episode
+            await RunDecisions(SearchFirstEpisodeTier(series, requestedEpisodes, firstEpisode, userInvokedSearch), onResults);
         }
 
-        private async Task<List<DownloadDecision>> SearchBundleQuery(Series series, List<Episode> requestedEpisodes, string query, string tier, bool userInvokedSearch)
+        private async Task RunDecisions(Task<List<DownloadDecision>> search, Func<List<DownloadDecision>, Task> onResults)
+        {
+            await onResults(DeDupeDecisions(await search));
+        }
+
+        private BundleSearchCriteria BuildBundleSpec(Series series, List<Episode> requestedEpisodes, bool userInvokedSearch, string tier, string queryTitle, string query)
         {
             var spec = Get<BundleSearchCriteria>(series, requestedEpisodes, true, userInvokedSearch, false);
             spec.EpisodeQueryTitles = new[] { query };
+            spec.QueryTitle = queryTitle;
             spec.BundleRequestedEpisodes = requestedEpisodes;
             spec.Tier = tier;
 
-            return await Dispatch(indexer => indexer.Fetch(spec), spec);
-        }
-
-        private async Task<List<DownloadDecision>> SearchSeasonTier(Series series, List<Episode> requestedEpisodes, Episode firstEpisode, bool userInvokedSearch)
-        {
-            var seasonNumber = firstEpisode.SceneSeasonNumber ?? firstEpisode.SeasonNumber;
-
-            if (series.SeriesType == SeriesTypes.Anime)
-            {
-                // Anime indexers (e.g. Nyaa) are searched by text, the standard season search is usually disabled for them
-                return await SearchBundleQuery(series, requestedEpisodes, BundleSearchCriteria.BuildSeasonQuery(series, seasonNumber), "Season pack", userInvokedSearch);
-            }
-
-            return await SearchSeasonEpisodes(series, requestedEpisodes, requestedEpisodes.Where(e => e.SeasonNumber == firstEpisode.SeasonNumber).ToList(), userInvokedSearch);
+            return spec;
         }
 
         private async Task<List<DownloadDecision>> SearchSeasonEpisodes(Series series, List<Episode> requestedEpisodes, List<Episode> seasonEpisodes, bool userInvokedSearch)
@@ -678,6 +723,11 @@ namespace NzbDrone.Core.IndexerSearch
 
             var reports = batch.SelectMany(x => x).ToList();
             var fetchTime = stopwatch.ElapsedMilliseconds;
+
+            if (criteriaBase is BundleSearchCriteria bundleCriteria)
+            {
+                bundleCriteria.MaxIndexerReleaseCount = batch.Select(x => x.Count).DefaultIfEmpty(0).Max();
+            }
 
             _logger.ProgressDebug("Total of {0} reports were found for {1} from {2} indexers", reports.Count, criteriaBase, indexers.Count);
 
