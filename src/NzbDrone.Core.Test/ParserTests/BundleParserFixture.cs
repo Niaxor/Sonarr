@@ -140,7 +140,9 @@ namespace NzbDrone.Core.Test.ParserTests
         [TestCase("[Judas] Sousou no Frieren (Frieren Beyond Journey`s End) (Season 01) [BD 1080p][HEVC x265 10bit][Dual-Audio][Eng-Subs] (Batch)", "Sousou no Frieren (Frieren Beyond Journey`s End)", 1)]
         [TestCase("[Judas] Sousou no Frieren (Frieren Beyond Journey`s End) (Season 02) [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs] (Batch)", "Sousou no Frieren (Frieren Beyond Journey`s End)", 2)]
         [TestCase("[DKB] Sousou no Frieren - (Season 01) [1080p][HEVC x265 10bit][Multi-Subs][Batch]", "Sousou no Frieren", 1)]
-        public void should_parse_two_digit_bracketed_season_pack(string title, string seriesTitle, int season)
+        [TestCase("[Tenrai-Sensei] Frieren: Beyond Journey's End (Season 1+OVAs) [BD][1080p][HEVC 10bit x265][Dual Audio] Sousou no Frieren", "Frieren: Beyond Journey's End", 1)]
+        [TestCase("[Judas] Tensei Shitara Slime Datta Ken (That Time I Got Reincarnated as a Slime) (Season 1 + OADs) [BD 1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs] (Batch)", "Tensei Shitara Slime Datta Ken (That Time I Got Reincarnated as a Slime)", 1)]
+        public void should_parse_bracketed_season_pack(string title, string seriesTitle, int season)
         {
             var result = Parser.Parser.ParseTitle(title);
 
@@ -160,6 +162,18 @@ namespace NzbDrone.Core.Test.ParserTests
             result.Should().NotBeNull();
             result.FullSeason.Should().BeFalse();
             result.AbsoluteEpisodeNumbers.Should().Contain(absolute);
+        }
+
+        [Test]
+        public void should_parse_bracketed_multi_season_pack_with_year_range()
+        {
+            var result = Parser.Parser.ParseTitle("[EMBER] That Time I Got Reincarnated as a Slime (2019-2021) (Season 1+2+OVA+Specials) & The Slime Diaries [BDRip] [1080p]");
+
+            result.Should().NotBeNull();
+            result.SeriesTitle.Should().Be("That Time I Got Reincarnated as a Slime");
+            result.IsMultiSeason.Should().BeTrue();
+            result.MultiSeasonNumbers.Should().Equal(1, 2);
+            result.AbsoluteEpisodeNumbers.Should().BeEmpty();
         }
     }
 }
