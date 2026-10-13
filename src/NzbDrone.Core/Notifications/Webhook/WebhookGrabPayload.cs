@@ -11,5 +11,8 @@ namespace NzbDrone.Core.Notifications.Webhook
         public string DownloadClientType { get; set; }
         public string DownloadId { get; set; }
         public WebhookCustomFormatInfo CustomFormatInfo { get; set; }
+
+        // Bundle fast-start grabs only (omitted otherwise): the torrent file each episode downloads from
+        public WebhookFastStartGrab FastStart { get; set; }
     }
 }

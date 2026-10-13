@@ -46,6 +46,7 @@ namespace NzbDrone.Core.Notifications.Webhook
                 DownloadClientType = message.DownloadClientType,
                 DownloadId = message.DownloadId,
                 CustomFormatInfo = new WebhookCustomFormatInfo(remoteEpisode.CustomFormats, remoteEpisode.CustomFormatScore),
+                FastStart = WebhookFastStartGrab.Create(remoteEpisode)
             };
         }
 

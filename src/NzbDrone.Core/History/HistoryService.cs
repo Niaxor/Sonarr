@@ -8,6 +8,7 @@ using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.Events;
+using NzbDrone.Core.Messaging;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.Tv.Events;
@@ -135,6 +136,8 @@ namespace NzbDrone.Core.History
             return downloadId;
         }
 
+        // First, so the Grabbed rows (the fast-start sources) exist before the Grab notifications/webhooks are sent
+        [EventHandleOrder(EventHandleOrder.First)]
         public void Handle(EpisodeGrabbedEvent message)
         {
             foreach (var episode in message.Episode.Episodes)
@@ -190,7 +193,7 @@ namespace NzbDrone.Core.History
                     history.Data.Add("BundleTotalFiles", message.Episode.BundleSelection.Files.Count.ToString());
 
                     // Tiered grab: the file this episode is downloaded from (see GET /api/v3/faststart/sources)
-                    var file = message.Episode.BundleSelection.SelectedFiles.FirstOrDefault(f => f.EpisodeIds.Contains(episode.Id));
+                    var file = message.Episode.BundleSelection.GetSelectedFileForEpisode(episode.Id);
 
                     if (file != null)
                     {

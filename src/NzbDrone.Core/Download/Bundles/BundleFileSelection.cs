@@ -33,6 +33,12 @@ namespace NzbDrone.Core.Download.Bundles
         public string Reason { get; set; }
 
         public List<BundleTorrentFile> SelectedFiles => Files.Where(f => f.Selected).ToList();
+
+        // The selected file an episode is downloaded from, null if none
+        public BundleTorrentFile GetSelectedFileForEpisode(int episodeId)
+        {
+            return Files.FirstOrDefault(f => f.Selected && f.EpisodeIds.Contains(episodeId));
+        }
     }
 
     public class BundleTorrentFile
