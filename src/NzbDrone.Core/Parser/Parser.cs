@@ -62,6 +62,11 @@ namespace NzbDrone.Core.Parser
                 new Regex(@"^(?:\[(?<subgroup>.+?)\][-_. ]?)?(?<title>.+?)[-_. ]+S(?<season>(?<!\d+)\d{1,2})[-_. ]?-[-_. ]?S(?<season>\d{1,2}(?!\d+))[-_. ]+[(\[]?E(?<absoluteepisode>\d{2,4})[-_. ]?-[-_. ]?E(?<absoluteepisode>\d{2,4})(?!\d+)[)\]]?",
                           RegexOptions.IgnoreCase | RegexOptions.Compiled),
 
+                // Bundle fast-start: anime season pack with a two digit season in brackets and no episode numbers after it,
+                // e.g. "[Judas] Title (Alt Title) (Season 01) [BD 1080p] (Batch)" (the "01" was parsed as absolute episode 1)
+                new Regex(@"^\[(?<subgroup>[^\]]+?)\][-_. ]?(?<title>[^\[\]]+?)[-_. ]+[(\[]Season[-_. ]?(?<season>(?<!\d+)\d{2}(?!\d+))[)\]](?![-_. ]*(?:[-~][-_. ]*)?#?\d)",
+                          RegexOptions.IgnoreCase | RegexOptions.Compiled),
+
                 // Anime - Absolute Episode Number + Title + Season+Episode
                 // Todo: This currently breaks series that start with numbers
 //                new Regex(@"^(?:(?<absoluteepisode>\d{2,3})(?:_|-|\s|\.)+)+(?<title>.+?)(?:\W|_)+(?:S?(?<season>(?<!\d+)\d{1,2}(?!\d+))(?:(?:\-|[ex]|\W[ex]){1,2}(?<episode>\d{2}(?!\d+)))+)",

@@ -136,5 +136,30 @@ namespace NzbDrone.Core.Test.ParserTests
         {
             Parser.Parser.ParseTitle("Series Title (2018) Complete 360p HDTV AAC H.264-NEXT").Should().BeNull();
         }
+
+        [TestCase("[Judas] Sousou no Frieren (Frieren Beyond Journey`s End) (Season 01) [BD 1080p][HEVC x265 10bit][Dual-Audio][Eng-Subs] (Batch)", "Sousou no Frieren (Frieren Beyond Journey`s End)", 1)]
+        [TestCase("[Judas] Sousou no Frieren (Frieren Beyond Journey`s End) (Season 02) [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs] (Batch)", "Sousou no Frieren (Frieren Beyond Journey`s End)", 2)]
+        [TestCase("[DKB] Sousou no Frieren - (Season 01) [1080p][HEVC x265 10bit][Multi-Subs][Batch]", "Sousou no Frieren", 1)]
+        public void should_parse_two_digit_bracketed_season_pack(string title, string seriesTitle, int season)
+        {
+            var result = Parser.Parser.ParseTitle(title);
+
+            result.Should().NotBeNull();
+            result.SeriesTitle.Should().Be(seriesTitle);
+            result.SeasonNumber.Should().Be(season);
+            result.FullSeason.Should().BeTrue();
+            result.AbsoluteEpisodeNumbers.Should().BeEmpty();
+        }
+
+        [TestCase("[SubGroup] Show Title (Season 02) - 05 [1080p][ABCD1234]", 5)]
+        [TestCase("[SubGroup] Show Title (Season 02) 05 [1080p]", 5)]
+        public void should_still_parse_episode_after_bracketed_season(string title, int absolute)
+        {
+            var result = Parser.Parser.ParseTitle(title);
+
+            result.Should().NotBeNull();
+            result.FullSeason.Should().BeFalse();
+            result.AbsoluteEpisodeNumbers.Should().Contain(absolute);
+        }
     }
 }
