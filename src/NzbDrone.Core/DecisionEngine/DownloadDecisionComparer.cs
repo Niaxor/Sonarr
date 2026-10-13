@@ -109,9 +109,29 @@ namespace NzbDrone.Core.DecisionEngine
                 return CompareBy(x.RemoteEpisode, y.RemoteEpisode, remoteEpisode => remoteEpisode.Series.QualityProfile.Value.GetIndex(remoteEpisode.ParsedEpisodeInfo.Quality.Quality));
             }
 
-            return CompareAll(
-                CompareBy(x.RemoteEpisode, y.RemoteEpisode, remoteEpisode => remoteEpisode.Series.QualityProfile.Value.GetIndex(remoteEpisode.ParsedEpisodeInfo.Quality.Quality)),
-                CompareBy(x.RemoteEpisode, y.RemoteEpisode, remoteEpisode => remoteEpisode.ParsedEpisodeInfo.Quality.Revision));
+            var qualityCompare = CompareBy(x.RemoteEpisode, y.RemoteEpisode, remoteEpisode => remoteEpisode.Series.QualityProfile.Value.GetIndex(remoteEpisode.ParsedEpisodeInfo.Quality.Quality));
+
+            if (qualityCompare != 0)
+            {
+                return qualityCompare;
+            }
+
+            // Fast-start: a revision (v2, PROPER, REPACK) only says something about another release from the same group,
+            // so it is ignored between different groups and seeders etc. decide instead.
+            if (_bundleFastStart && !IsSameReleaseGroup(x.RemoteEpisode, y.RemoteEpisode))
+            {
+                return 0;
+            }
+
+            return CompareBy(x.RemoteEpisode, y.RemoteEpisode, remoteEpisode => remoteEpisode.ParsedEpisodeInfo.Quality.Revision);
+        }
+
+        private static bool IsSameReleaseGroup(RemoteEpisode x, RemoteEpisode y)
+        {
+            var left = x.ParsedEpisodeInfo?.ReleaseGroup;
+            var right = y.ParsedEpisodeInfo?.ReleaseGroup;
+
+            return left.IsNotNullOrWhiteSpace() && right.IsNotNullOrWhiteSpace() && string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
         }
 
         private int CompareCustomFormatScore(DownloadDecision x, DownloadDecision y)

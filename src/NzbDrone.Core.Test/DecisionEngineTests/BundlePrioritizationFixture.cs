@@ -48,13 +48,13 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
                 .Returns(new QualityDefinition { PreferredSize = null });
         }
 
-        private DownloadDecision GivenBundle(string title, Quality quality, int seeders, int indexerPriority = 25, int episodeCount = 24)
+        private DownloadDecision GivenBundle(string title, Quality quality, int seeders, int indexerPriority = 25, int episodeCount = 24, string releaseGroup = null, int version = 1)
         {
             return new DownloadDecision(new RemoteEpisode
             {
                 Series = _series,
                 Episodes = _season1.Take(episodeCount).ToList(),
-                ParsedEpisodeInfo = new ParsedEpisodeInfo { Quality = new QualityModel(quality) },
+                ParsedEpisodeInfo = new ParsedEpisodeInfo { Quality = new QualityModel(quality, new Revision(version)), ReleaseGroup = releaseGroup },
                 Release = new TorrentInfo
                 {
                     Title = title,
@@ -128,6 +128,58 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
 
             Subject.PrioritizeDecisions(new List<DownloadDecision> { healthy, poorlySeeded })
                 .First().Should().Be(poorlySeeded);
+        }
+
+        [Test]
+        public void revision_should_be_ignored_between_different_release_groups()
+        {
+            // Frieren: Rapta v1 with 150 seeders against amZero v2 with 30 seeders, same quality
+            var rapta = GivenBundle("Frieren Beyond Journeys End S01 Season 1 1080p CR WEBRip Dual Audio 10bits x265-Rapta", Quality.WEBRip1080p, 150, releaseGroup: "Rapta");
+            var amZero = GivenBundle("[amZero] Sousou no Frieren S1_v2 [1080p AV1 10Bit][WEBRip][Dual Audio][MultiSubs] (Batch)", Quality.WEBRip1080p, 30, releaseGroup: "amZero", version: 2);
+
+            Subject.PrioritizeBundleDecisions(new List<DownloadDecision> { amZero, rapta })
+                .First().Should().Be(rapta);
+        }
+
+        [Test]
+        public void revision_should_win_within_the_same_release_group()
+        {
+            var v1 = GivenBundle("[amZero] Sousou no Frieren S1 [1080p][WEBRip] (Batch)", Quality.WEBRip1080p, 150, releaseGroup: "amZero");
+            var v2 = GivenBundle("[amZero] Sousou no Frieren S1_v2 [1080p][WEBRip] (Batch)", Quality.WEBRip1080p, 30, releaseGroup: "AMZERO", version: 2);
+
+            Subject.PrioritizeBundleDecisions(new List<DownloadDecision> { v1, v2 })
+                .First().Should().Be(v2);
+        }
+
+        [Test]
+        public void revision_should_be_ignored_when_a_release_group_is_unknown()
+        {
+            var known = GivenBundle("Frieren S01 1080p WEBRip-Rapta", Quality.WEBRip1080p, 150, releaseGroup: "Rapta");
+            var unknown = GivenBundle("Frieren S01 v2 1080p WEBRip", Quality.WEBRip1080p, 30, version: 2);
+
+            Subject.PrioritizeBundleDecisions(new List<DownloadDecision> { unknown, known })
+                .First().Should().Be(known);
+        }
+
+        [Test]
+        public void quality_should_still_win_over_seeders_between_release_groups()
+        {
+            // anime4life Bluray with 59 seeders against Rapta WEBRip with 150
+            var anime4life = GivenBundle("[anime4life.] Frieren - Beyond Journey's End Season 1 BD_1080p Dolby TrueHD Dual Audio", Quality.Bluray1080p, 59, releaseGroup: "anime4life.");
+            var rapta = GivenBundle("Frieren Beyond Journeys End S01 Season 1 1080p CR WEBRip Dual Audio 10bits x265-Rapta", Quality.WEBRip1080p, 150, releaseGroup: "Rapta");
+
+            Subject.PrioritizeBundleDecisions(new List<DownloadDecision> { rapta, anime4life })
+                .First().Should().Be(anime4life);
+        }
+
+        [Test]
+        public void normal_search_still_prefers_a_higher_revision_from_another_group()
+        {
+            var rapta = GivenBundle("Frieren S01 1080p WEBRip-Rapta", Quality.WEBRip1080p, 150, releaseGroup: "Rapta");
+            var amZero = GivenBundle("[amZero] Sousou no Frieren S1_v2 [1080p][WEBRip] (Batch)", Quality.WEBRip1080p, 30, releaseGroup: "amZero", version: 2);
+
+            Subject.PrioritizeDecisions(new List<DownloadDecision> { rapta, amZero })
+                .First().Should().Be(amZero);
         }
     }
 }
